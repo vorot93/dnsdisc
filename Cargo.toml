@@ -1,0 +1,25 @@
+[package]
+name = "dnsdisc"
+version = "0.1.0"
+authors = ["Artem Vorotnikov <artem@vorotnikov.me>"]
+edition = "2018"
+description = "Ethereum's Node Discovery via DNS (EIP-1459)"
+license = "Apache-2.0"
+
+[dependencies]
+arrayvec = "0.5"
+async-stream = "0.3"
+async-trait = "0.1"
+data-encoding = "2"
+derive_more = "0.99"
+enr = "0.2"
+ethereum-types = "0.9"
+libsecp256k1 = "0.3"
+log = "0.4"
+maplit = "1"
+sha3 = "0.9"
+tokio = { version = "0.2", features = ["stream"] }
+
+[dev-dependencies]
+env_logger = "0.7"
+tokio = { version = "0.2", features = ["full"] }
