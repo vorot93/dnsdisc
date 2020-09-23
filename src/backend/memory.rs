@@ -4,11 +4,12 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 
 #[async_trait]
-impl Backend for HashMap<(String, String), String> {
-    async fn get_record(&self, subdomain: String, domain: String) -> Result<DnsRecord, StdError> {
-        Ok(self
-            .get(&(subdomain.clone(), domain.clone()))
-            .ok_or_else(|| StdError::from(format!("No record for {}.{}", subdomain, domain)))?
-            .parse()?)
+impl Backend for HashMap<String, String> {
+    async fn get_record(&self, fqdn: String) -> Result<Option<DnsRecord>, StdError> {
+        if let Some(v) = self.get(&fqdn) {
+            return Ok(Some(v.parse()?));
+        }
+
+        Ok(None)
     }
 }

@@ -27,3 +27,7 @@ tokio = { version = "0.2", features = ["full"] }
 
 [features]
 trust-dns = ["trust-dns-resolver"]
+
+[[example]]
+name = "request"
+required-features = ["trust-dns"]

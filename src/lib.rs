@@ -186,7 +186,16 @@ impl FromStr for DnsRecord {
             let children = branch
                 .trim()
                 .split(',')
-                .map(|h| h.parse::<Base32Hash>().map_err(StdError::from))
+                .filter_map(|h| match h.parse::<Base32Hash>() {
+                    Ok(v) => {
+                        if v.is_empty() {
+                            None
+                        } else {
+                            Some(Ok(v))
+                        }
+                    }
+                    Err(e) => Some(Err(StdError::from(e))),
+                })
                 .collect::<Result<BTreeSet<_>, StdError>>()?;
 
             return Ok(DnsRecord::Branch { children });
@@ -229,46 +238,48 @@ fn resolve_branch<B: Backend>(
     Box::pin(try_stream! {
         trace!("Resolving branch {:?}", children);
         for subdomain in children {
-            let record = backend.get_record(subdomain.to_string(), host.clone()).await?;
-            trace!("Resolved record {}: {:?}", subdomain, record);
-            match &record {
-                DnsRecord::Branch {
-                    children
-                } => {
-                    let mut t = resolve_branch(backend.clone(), host.clone(), children.iter().copied().collect(), kind.clone());
-                    while let Some(item) = t.try_next().await? {
-                        yield item;
-                    }
-                    continue;
-                }
-                DnsRecord::Link {
-                    public_key,
-                    domain,
-                } => {
-                    if let BranchKind::Link { remote_whitelist } = &kind {
-                        if domain_is_allowed(&remote_whitelist, domain, public_key) {
-                            let mut t = resolve_tree(backend.clone(), domain.clone(), Some(public_key.clone()), None, remote_whitelist.clone());
-                            while let Some(item) = t.try_next().await? {
-                                yield item;
-                            }
-                        } else {
-                            trace!("Skipping subtree for forbidden domain: {}", domain);
+            let record = backend.get_record(format!("{}.{}", subdomain, host)).await?;
+            if let Some(record) = record {
+                trace!("Resolved record {}: {:?}", subdomain, record);
+                match &record {
+                    DnsRecord::Branch {
+                        children
+                    } => {
+                        let mut t = resolve_branch(backend.clone(), host.clone(), children.iter().copied().collect(), kind.clone());
+                        while let Some(item) = t.try_next().await? {
+                            yield item;
                         }
                         continue;
                     }
-                }
-                DnsRecord::Enr {
-                    record
-                } => {
-                    if let BranchKind::Enr = &kind {
-                        yield record.clone();
-                        continue
+                    DnsRecord::Link {
+                        public_key,
+                        domain,
+                    } => {
+                        if let BranchKind::Link { remote_whitelist } = &kind {
+                            if domain_is_allowed(&remote_whitelist, domain, public_key) {
+                                let mut t = resolve_tree(backend.clone(), domain.clone(), Some(public_key.clone()), None, remote_whitelist.clone());
+                                while let Some(item) = t.try_next().await? {
+                                    yield item;
+                                }
+                            } else {
+                                trace!("Skipping subtree for forbidden domain: {}", domain);
+                            }
+                            continue;
+                        }
                     }
+                    DnsRecord::Enr {
+                        record
+                    } => {
+                        if let BranchKind::Enr = &kind {
+                            yield record.clone();
+                            continue
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
-            }
 
-            Err(StdError::from(format!("Unexpected record: {:?}", record)))?;
+                Err(StdError::from(format!("Unexpected record: {:?}", record)))?;
+            }
         }
         trace!("Resolution complete");
     })
@@ -282,34 +293,36 @@ fn resolve_tree<B: Backend>(
     remote_whitelist: Option<HashMap<String, PublicKey>>,
 ) -> Pin<Box<dyn Stream<Item = Result<Enr, StdError>> + Send + 'static>> {
     Box::pin(try_stream! {
-        let record = backend.get_record("@".into(), host.clone()).await?;
-        if let DnsRecord::Root(record) = &record {
-            if let Some(pk) = public_key {
-                if !record.verify(&pk)? {
-                    Err(StdError::from("Public key does not match"))?;
+        let record = backend.get_record(host.clone()).await?;
+        if let Some(record) = &record {
+            if let DnsRecord::Root(record) = &record {
+                if let Some(pk) = public_key {
+                    if !record.verify(&pk)? {
+                        Err(StdError::from("Public key does not match"))?;
+                    }
                 }
-            }
 
-            let UnsignedRoot { enr_root, link_root, sequence } = &record.base;
+                let UnsignedRoot { enr_root, link_root, sequence } = &record.base;
 
-            if let Some(seen) = seen_sequence {
-                if *sequence <= seen {
-                    // We have already seen this record.
-                    return;
+                if let Some(seen) = seen_sequence {
+                    if *sequence <= seen {
+                        // We have already seen this record.
+                        return;
+                    }
                 }
-            }
 
-            let mut s = resolve_branch(backend.clone(), host.clone(), hashset![ *link_root ], BranchKind::Link { remote_whitelist });
-            while let Some(record) = s.try_next().await? {
-                yield record;
-            }
+                let mut s = resolve_branch(backend.clone(), host.clone(), hashset![ *link_root ], BranchKind::Link { remote_whitelist });
+                while let Some(record) = s.try_next().await? {
+                    yield record;
+                }
 
-            let mut s = resolve_branch(backend.clone(), host.clone(), hashset![ *enr_root ], BranchKind::Enr);
-            while let Some(record) = s.try_next().await? {
-                yield record;
+                let mut s = resolve_branch(backend.clone(), host.clone(), hashset![ *enr_root ], BranchKind::Enr);
+                while let Some(record) = s.try_next().await? {
+                    yield record;
+                }
+            } else {
+                Err(StdError::from(format!("Expected root, got {:?}", record)))?;
             }
-        } else {
-            Err(StdError::from(format!("Expected root, got {:?}", record)))?;
         }
 
         trace!("Tree resolution complete");
@@ -372,31 +385,40 @@ mod tests {
         env_logger::init();
 
         const DOMAIN: &str = "mynodes.org";
-        const TEST_RECORDS: &[(&str, &str)] = &[
+        const TEST_RECORDS: &[(Option<&str>, &str)] = &[
             (
-                "@",
+                None,
                 "enrtree-root:v1 e=JWXYDBPXYWG6FX3GMDIBFA6CJ4 l=C7HRFPF3BLGF3YR4DY5KX3SMBE seq=1 sig=o908WmNp7LibOfPsr4btQwatZJ5URBr2ZAuxvK4UWHlsB9sUOTJQaGAlLPVAhM__XJesCHxLISo94z5Z2a463gA"
             ), (
-                "C7HRFPF3BLGF3YR4DY5KX3SMBE",
+                Some("C7HRFPF3BLGF3YR4DY5KX3SMBE"),
                 "enrtree://AM5FCQLWIZX2QFPNJAP7VUERCCRNGRHWZG3YYHIUV7BVDQ5FDPRT2@morenodes.example.org"
             ), (
-                "JWXYDBPXYWG6FX3GMDIBFA6CJ4",
+                Some("JWXYDBPXYWG6FX3GMDIBFA6CJ4"),
                 "enrtree-branch:2XS2367YHAXJFGLZHVAWLQD4ZY,H4FHT4B454P6UXFD7JCYQ5PWDY,MHTDO6TMUBRIA2XWG5LUDACK24",
             ), (
-                "2XS2367YHAXJFGLZHVAWLQD4ZY",
+                Some("2XS2367YHAXJFGLZHVAWLQD4ZY"),
                 "enr:-HW4QOFzoVLaFJnNhbgMoDXPnOvcdVuj7pDpqRvh6BRDO68aVi5ZcjB3vzQRZH2IcLBGHzo8uUN3snqmgTiE56CH3AMBgmlkgnY0iXNlY3AyNTZrMaECC2_24YYkYHEgdzxlSNKQEnHhuNAbNlMlWJxrJxbAFvA"
             ), (
-                "H4FHT4B454P6UXFD7JCYQ5PWDY",
+                Some("H4FHT4B454P6UXFD7JCYQ5PWDY"),
                 "enr:-HW4QAggRauloj2SDLtIHN1XBkvhFZ1vtf1raYQp9TBW2RD5EEawDzbtSmlXUfnaHcvwOizhVYLtr7e6vw7NAf6mTuoCgmlkgnY0iXNlY3AyNTZrMaECjrXI8TLNXU0f8cthpAMxEshUyQlK-AM0PW2wfrnacNI"
             ), (
-                "MHTDO6TMUBRIA2XWG5LUDACK24",
+                Some("MHTDO6TMUBRIA2XWG5LUDACK24"),
                 "enr:-HW4QLAYqmrwllBEnzWWs7I5Ev2IAs7x_dZlbYdRdMUx5EyKHDXp7AV5CkuPGUPdvbv1_Ms1CPfhcGCvSElSosZmyoqAgmlkgnY0iXNlY3AyNTZrMaECriawHKWdDRk2xeZkrOXBQ0dfMFLHY4eENZwdufn1S1o"
             )
         ];
 
         let data = TEST_RECORDS
             .iter()
-            .map(|(sub, entry)| ((sub.to_string(), DOMAIN.to_string()), entry.to_string()))
+            .map(|(sub, entry)| {
+                (
+                    format!(
+                        "{}{}",
+                        sub.map(|s| format!("{}.", s)).unwrap_or_default(),
+                        DOMAIN.to_string()
+                    ),
+                    entry.to_string(),
+                )
+            })
             .collect::<HashMap<_, _>>();
 
         let mut s = Resolver::new(Arc::new(data))

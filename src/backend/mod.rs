@@ -9,12 +9,12 @@ pub mod trust_dns;
 
 #[async_trait]
 pub trait Backend: Send + Sync + 'static {
-    async fn get_record(&self, subdomain: String, host: String) -> Result<DnsRecord, StdError>;
+    async fn get_record(&self, fqdn: String) -> Result<Option<DnsRecord>, StdError>;
 }
 
 #[async_trait]
 impl Backend for Arc<dyn Backend> {
-    async fn get_record(&self, subdomain: String, host: String) -> Result<DnsRecord, StdError> {
-        (**self).get_record(subdomain, host).await
+    async fn get_record(&self, fqdn: String) -> Result<Option<DnsRecord>, StdError> {
+        (**self).get_record(fqdn).await
     }
 }
