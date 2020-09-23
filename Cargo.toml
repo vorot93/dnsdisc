@@ -19,7 +19,11 @@ log = "0.4"
 maplit = "1"
 sha3 = "0.9"
 tokio = { version = "0.2", features = ["stream"] }
+trust-dns-resolver = { version = "0.19", optional = true }
 
 [dev-dependencies]
 env_logger = "0.7"
 tokio = { version = "0.2", features = ["full"] }
+
+[features]
+trust-dns = ["trust-dns-resolver"]

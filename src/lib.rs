@@ -1,6 +1,6 @@
+use crate::backend::Backend;
 use arrayvec::ArrayString;
 use async_stream::try_stream;
-use async_trait::async_trait;
 use data_encoding::*;
 use derive_more::{Deref, Display};
 use log::*;
@@ -16,6 +16,7 @@ use std::{
     sync::Arc,
 };
 use tokio::stream::{Stream, StreamExt};
+mod backend;
 
 pub type StdError = Box<dyn std::error::Error + Send + Sync>;
 pub type Enr = enr::Enr<SecretKey>;
@@ -201,18 +202,6 @@ impl FromStr for DnsRecord {
     }
 }
 
-#[async_trait]
-pub trait Backend: Send + Sync + 'static {
-    async fn get_record(&self, subdomain: String, host: String) -> Result<DnsRecord, StdError>;
-}
-
-#[async_trait]
-impl Backend for Arc<dyn Backend> {
-    async fn get_record(&self, subdomain: String, host: String) -> Result<DnsRecord, StdError> {
-        (**self).get_record(subdomain, host).await
-    }
-}
-
 fn domain_is_allowed(
     whitelist: &Option<HashMap<String, PublicKey>>,
     domain: &str,
@@ -375,31 +364,8 @@ impl<B: Backend> Resolver<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use maplit::hashmap;
     use std::collections::{HashMap, HashSet};
-
-    #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-    struct Addr {
-        subdomain: String,
-        domain: String,
-    }
-
-    #[async_trait]
-    impl Backend for HashMap<Addr, String> {
-        async fn get_record(
-            &self,
-            subdomain: String,
-            domain: String,
-        ) -> Result<DnsRecord, StdError> {
-            Ok(self
-                .get(&{
-                    let domain = domain.clone();
-                    let subdomain = subdomain.clone();
-                    Addr { subdomain, domain }
-                })
-                .ok_or_else(|| StdError::from(format!("No record for {}.{}", subdomain, domain)))?
-                .parse()?)
-        }
-    }
 
     #[tokio::test]
     async fn eip_example() {
@@ -430,18 +396,12 @@ mod tests {
 
         let data = TEST_RECORDS
             .iter()
-            .map(|(sub, entry)| {
-                (
-                    Addr {
-                        subdomain: sub.to_string(),
-                        domain: DOMAIN.to_string(),
-                    },
-                    entry.to_string(),
-                )
-            })
+            .map(|(sub, entry)| ((sub.to_string(), DOMAIN.to_string()), entry.to_string()))
             .collect::<HashMap<_, _>>();
 
-        let mut s = Resolver::new(Arc::new(data)).query(DOMAIN.to_string(), None);
+        let mut s = Resolver::new(Arc::new(data))
+            .remote_whitelist(Some(hashmap![]))
+            .query(DOMAIN.to_string(), None);
         let mut out = HashSet::new();
         while let Some(record) = s.try_next().await.unwrap() {
             assert!(out.insert(record.to_base64()));
