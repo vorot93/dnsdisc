@@ -12,7 +12,10 @@ async fn main() {
 
     let mut st = dnsdisc::Resolver::new(Arc::new(resolver))
         .query("all.mainnet.ethdisco.net".to_string(), None);
+    let mut total = 0;
     while let Some(record) = st.try_next().await.unwrap() {
         println!("Got record: {}", record);
+        total += 1;
     }
+    println!("Resolved {} records", total);
 }
