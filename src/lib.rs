@@ -1,4 +1,3 @@
-use crate::backend::Backend;
 use arrayvec::ArrayString;
 use async_stream::try_stream;
 use data_encoding::*;
@@ -16,7 +15,9 @@ use std::{
     sync::Arc,
 };
 use tokio::stream::{Stream, StreamExt};
+
 mod backend;
+pub use crate::backend::Backend;
 
 pub type StdError = Box<dyn std::error::Error + Send + Sync>;
 
