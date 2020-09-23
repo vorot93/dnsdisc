@@ -116,8 +116,8 @@ impl FromStr for DnsRecord {
     type Err = StdError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        trace!("Parsing record {}", s);
         if let Some(root) = s.strip_prefix(ROOT_PREFIX) {
-            trace!("Parsing root entry {}", root);
             let mut e = None;
             let mut l = None;
             let mut seq = None;
@@ -237,7 +237,8 @@ fn resolve_branch<B: Backend>(
 ) -> Pin<Box<dyn Stream<Item = Result<Enr, StdError>> + Send + 'static>> {
     Box::pin(try_stream! {
         trace!("Resolving branch {:?}", children);
-        for subdomain in children {
+        for child in &children {
+            let subdomain = *child;
             let record = backend.get_record(format!("{}.{}", subdomain, host)).await?;
             if let Some(record) = record {
                 trace!("Resolved record {}: {:?}", subdomain, record);
@@ -279,9 +280,11 @@ fn resolve_branch<B: Backend>(
                 }
 
                 Err(StdError::from(format!("Unexpected record: {:?}", record)))?;
+            } else {
+                warn!("Child {} is empty", subdomain);
             }
         }
-        trace!("Resolution complete");
+        trace!("Branch {:?} resolution complete", children);
     })
 }
 
@@ -323,9 +326,10 @@ fn resolve_tree<B: Backend>(
             } else {
                 Err(StdError::from(format!("Expected root, got {:?}", record)))?;
             }
+            trace!("Resolution of tree at {} complete", host);
+        } else {
+            warn!("No records found for tree {}", host);
         }
-
-        trace!("Tree resolution complete");
     })
 }
 
