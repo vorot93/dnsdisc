@@ -19,8 +19,11 @@ use tokio::stream::{Stream, StreamExt};
 mod backend;
 
 pub type StdError = Box<dyn std::error::Error + Send + Sync>;
+
 pub type Enr = enr::Enr<SecretKey>;
 type Base32Hash = ArrayString<[u8; BASE32_HASH_LEN]>;
+
+pub type QueryStream = Pin<Box<dyn Stream<Item = Result<Enr, StdError>> + Send + 'static>>;
 
 pub const BASE32_HASH_LEN: usize = 26;
 pub const ROOT_PREFIX: &str = "enrtree-root:v1";
@@ -234,7 +237,7 @@ fn resolve_branch<B: Backend>(
     host: String,
     children: HashSet<Base32Hash>,
     kind: BranchKind,
-) -> Pin<Box<dyn Stream<Item = Result<Enr, StdError>> + Send + 'static>> {
+) -> QueryStream {
     Box::pin(try_stream! {
         trace!("Resolving branch {:?}", children);
         for child in &children {
@@ -294,7 +297,7 @@ fn resolve_tree<B: Backend>(
     public_key: Option<PublicKey>,
     seen_sequence: Option<usize>,
     remote_whitelist: Option<HashMap<String, PublicKey>>,
-) -> Pin<Box<dyn Stream<Item = Result<Enr, StdError>> + Send + 'static>> {
+) -> QueryStream {
     Box::pin(try_stream! {
         let record = backend.get_record(host.clone()).await?;
         if let Some(record) = &record {
@@ -363,11 +366,7 @@ impl<B> Resolver<B> {
 }
 
 impl<B: Backend> Resolver<B> {
-    pub fn query(
-        &self,
-        host: String,
-        public_key: Option<PublicKey>,
-    ) -> Pin<Box<dyn Stream<Item = Result<Enr, StdError>> + Send + 'static>> {
+    pub fn query(&self, host: String, public_key: Option<PublicKey>) -> QueryStream {
         resolve_tree(
             self.backend.clone(),
             host,
