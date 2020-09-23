@@ -19,7 +19,7 @@ use tokio::stream::{Stream, StreamExt};
 
 pub type StdError = Box<dyn std::error::Error + Send + Sync>;
 pub type Enr = enr::Enr<SecretKey>;
-pub type Base32Hash = ArrayString<[u8; BASE32_HASH_LEN]>;
+type Base32Hash = ArrayString<[u8; BASE32_HASH_LEN]>;
 
 pub const BASE32_HASH_LEN: usize = 26;
 pub const ROOT_PREFIX: &str = "enrtree-root:v1";
@@ -202,7 +202,7 @@ impl FromStr for DnsRecord {
 }
 
 #[async_trait]
-pub trait Backend: Send + Sync {
+pub trait Backend: Send + Sync + 'static {
     async fn get_record(&self, subdomain: String, host: String) -> Result<DnsRecord, StdError>;
 }
 
@@ -213,7 +213,7 @@ impl Backend for Arc<dyn Backend> {
     }
 }
 
-pub fn domain_is_allowed(
+fn domain_is_allowed(
     whitelist: &Option<HashMap<String, PublicKey>>,
     domain: &str,
     public_key: &PublicKey,
@@ -224,22 +224,22 @@ pub fn domain_is_allowed(
 }
 
 #[derive(Clone, Debug)]
-pub enum BranchKind {
+enum BranchKind {
     Enr,
     Link {
         remote_whitelist: Option<HashMap<String, PublicKey>>,
     },
 }
 
-pub fn resolve_branch(
-    backend: Arc<dyn Backend>,
+fn resolve_branch<B: Backend>(
+    backend: Arc<B>,
     host: String,
-    branch: HashSet<Base32Hash>,
+    children: HashSet<Base32Hash>,
     kind: BranchKind,
 ) -> Pin<Box<dyn Stream<Item = Result<Enr, StdError>> + Send + 'static>> {
     Box::pin(try_stream! {
-        trace!("Resolving branch {:?}", branch);
-        for subdomain in branch {
+        trace!("Resolving branch {:?}", children);
+        for subdomain in children {
             let record = backend.get_record(subdomain.to_string(), host.clone()).await?;
             trace!("Resolved record {}: {:?}", subdomain, record);
             match &record {
@@ -285,8 +285,8 @@ pub fn resolve_branch(
     })
 }
 
-pub fn resolve_tree(
-    backend: Arc<dyn Backend>,
+fn resolve_tree<B: Backend>(
+    backend: Arc<B>,
     host: String,
     public_key: Option<PublicKey>,
     seen_sequence: Option<usize>,
@@ -327,10 +327,54 @@ pub fn resolve_tree(
     })
 }
 
+pub struct Resolver<B> {
+    backend: Arc<B>,
+    seen_sequence: Option<usize>,
+    remote_whitelist: Option<HashMap<String, PublicKey>>,
+}
+
+impl<B> Resolver<B> {
+    pub fn new(backend: Arc<B>) -> Self {
+        Self {
+            backend,
+            seen_sequence: None,
+            remote_whitelist: None,
+        }
+    }
+
+    pub fn seen_sequence(&mut self, seen_sequence: Option<usize>) -> &mut Self {
+        self.seen_sequence = seen_sequence;
+        self
+    }
+
+    pub fn remote_whitelist(
+        &mut self,
+        remote_whitelist: Option<HashMap<String, PublicKey>>,
+    ) -> &mut Self {
+        self.remote_whitelist = remote_whitelist;
+        self
+    }
+}
+
+impl<B: Backend> Resolver<B> {
+    pub fn query(
+        &self,
+        host: String,
+        public_key: Option<PublicKey>,
+    ) -> Pin<Box<dyn Stream<Item = Result<Enr, StdError>> + Send + 'static>> {
+        resolve_tree(
+            self.backend.clone(),
+            host,
+            public_key,
+            self.seen_sequence,
+            self.remote_whitelist.clone(),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maplit::hashmap;
     use std::collections::{HashMap, HashSet};
 
     #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -397,13 +441,7 @@ mod tests {
             })
             .collect::<HashMap<_, _>>();
 
-        let mut s = resolve_tree(
-            Arc::new(data),
-            DOMAIN.to_string(),
-            None,
-            None,
-            Some(hashmap! {}),
-        );
+        let mut s = Resolver::new(Arc::new(data)).query(DOMAIN.to_string(), None);
         let mut out = HashSet::new();
         while let Some(record) = s.try_next().await.unwrap() {
             assert!(out.insert(record.to_base64()));
