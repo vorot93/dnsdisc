@@ -2,10 +2,12 @@ use arrayvec::ArrayString;
 use async_stream::try_stream;
 use data_encoding::*;
 use derive_more::{Deref, Display};
+use k256::{
+    ecdsa::{recoverable::Signature, signature::Signature as _, SigningKey, VerifyKey},
+    EncodedPoint,
+};
 use log::*;
 use maplit::hashset;
-use secp256k1::{Message, PublicKey, PublicKeyFormat, RecoveryId, SecretKey, Signature};
-use sha3::{Digest, Keccak256};
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
     fmt,
@@ -21,7 +23,7 @@ pub use crate::backend::Backend;
 
 pub type StdError = Box<dyn std::error::Error + Send + Sync>;
 
-pub type Enr = enr::Enr<SecretKey>;
+pub type Enr = enr::Enr<SigningKey>;
 type Base32Hash = ArrayString<[u8; BASE32_HASH_LEN]>;
 
 pub type QueryStream = Pin<Box<dyn Stream<Item = Result<Enr, StdError>> + Send + 'static>>;
@@ -37,7 +39,6 @@ pub struct RootRecord {
     #[deref]
     base: UnsignedRoot,
     signature: Signature,
-    recovery_id: RecoveryId,
 }
 
 #[derive(Clone, Debug, Display)]
@@ -54,24 +55,23 @@ pub struct UnsignedRoot {
     sequence: usize,
 }
 
-impl UnsignedRoot {
-    fn message(&self) -> Message {
-        Message::parse_slice(&*Keccak256::digest(self.to_string().as_bytes())).unwrap()
-    }
-}
-
 impl RootRecord {
-    fn verify(&self, pk: &PublicKey) -> Result<bool, StdError> {
-        Ok(secp256k1::recover(&self.base.message(), &self.signature, &self.recovery_id)? == *pk)
+    fn verify(&self, pk: &VerifyKey) -> Result<bool, StdError> {
+        Ok(self
+            .signature
+            .recover_verify_key(self.to_string().as_bytes())?
+            == *pk)
     }
 }
 
 impl Display for RootRecord {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let mut sig = [0_u8; 65];
-        sig.copy_from_slice(&self.signature.serialize());
-        sig[64] = self.recovery_id.serialize();
-        write!(f, "{} sig={}", self.base, BASE64.encode(&sig))
+        write!(
+            f,
+            "{} sig={}",
+            self.base,
+            BASE64.encode(self.signature.as_ref())
+        )
     }
 }
 
@@ -79,7 +79,7 @@ impl Display for RootRecord {
 pub enum DnsRecord {
     Root(RootRecord),
     Link {
-        public_key: PublicKey,
+        public_key: VerifyKey,
         domain: String,
     },
     Branch {
@@ -98,7 +98,7 @@ impl Display for DnsRecord {
                 f,
                 "{}{}@{}",
                 LINK_PREFIX,
-                BASE32_NOPAD.encode(&public_key.serialize_compressed()),
+                BASE32_NOPAD.encode(&public_key.to_bytes()),
                 domain
             ),
             Self::Branch { children } => write!(
@@ -126,7 +126,6 @@ impl FromStr for DnsRecord {
             let mut l = None;
             let mut seq = None;
             let mut sig = None;
-            let mut rec = None;
             for entry in root.trim().split_whitespace() {
                 if let Some(v) = entry.strip_prefix("e=") {
                     trace!("Extracting ENR root: {:?}", v);
@@ -140,14 +139,7 @@ impl FromStr for DnsRecord {
                 } else if let Some(v) = entry.strip_prefix("sig=") {
                     trace!("Extracting signature: {:?}", v);
                     let v = BASE64URL_NOPAD.decode(v.as_bytes())?;
-                    sig =
-                        Some(Signature::parse_slice(v.get(..64).ok_or_else(|| {
-                            StdError::from("Signature body not found")
-                        })?)?);
-                    rec = Some(RecoveryId::parse(
-                        *v.get(64)
-                            .ok_or_else(|| StdError::from("Recovery ID not found"))?,
-                    )?);
+                    sig = Some(Signature::from_bytes(&v)?);
                 } else {
                     return Err(format!("Invalid string: {}", entry).into());
                 }
@@ -160,7 +152,6 @@ impl FromStr for DnsRecord {
                     sequence: seq.ok_or_else(|| StdError::from("Sequence not found"))?,
                 },
                 signature: sig.ok_or_else(|| StdError::from("Signature not found"))?,
-                recovery_id: rec.ok_or_else(|| StdError::from("Recovery ID not found"))?,
             };
 
             trace!("Successfully parsed {:?}", v);
@@ -170,14 +161,13 @@ impl FromStr for DnsRecord {
 
         if let Some(link) = s.strip_prefix(LINK_PREFIX) {
             let mut it = link.split('@');
-            let public_key = PublicKey::parse_slice(
+            let public_key = VerifyKey::from_encoded_point(&EncodedPoint::from_bytes(
                 &BASE32_NOPAD.decode(
                     &it.next()
                         .ok_or_else(|| StdError::from("Public key not found"))?
                         .as_bytes(),
                 )?,
-                Some(PublicKeyFormat::Compressed),
-            )?;
+            )?)?;
             let domain = it
                 .next()
                 .ok_or_else(|| StdError::from("Domain not found"))?
@@ -216,9 +206,9 @@ impl FromStr for DnsRecord {
 }
 
 fn domain_is_allowed(
-    whitelist: &Option<HashMap<String, PublicKey>>,
+    whitelist: &Option<HashMap<String, VerifyKey>>,
     domain: &str,
-    public_key: &PublicKey,
+    public_key: &VerifyKey,
 ) -> bool {
     whitelist.as_ref().map_or(true, |whitelist| {
         whitelist.get(domain).map_or(false, |pk| *pk == *public_key)
@@ -229,7 +219,7 @@ fn domain_is_allowed(
 enum BranchKind {
     Enr,
     Link {
-        remote_whitelist: Option<HashMap<String, PublicKey>>,
+        remote_whitelist: Option<HashMap<String, VerifyKey>>,
     },
 }
 
@@ -295,9 +285,9 @@ fn resolve_branch<B: Backend>(
 fn resolve_tree<B: Backend>(
     backend: Arc<B>,
     host: String,
-    public_key: Option<PublicKey>,
+    public_key: Option<VerifyKey>,
     seen_sequence: Option<usize>,
-    remote_whitelist: Option<HashMap<String, PublicKey>>,
+    remote_whitelist: Option<HashMap<String, VerifyKey>>,
 ) -> QueryStream {
     Box::pin(try_stream! {
         let record = backend.get_record(host.clone()).await?;
@@ -340,7 +330,7 @@ fn resolve_tree<B: Backend>(
 pub struct Resolver<B> {
     backend: Arc<B>,
     seen_sequence: Option<usize>,
-    remote_whitelist: Option<HashMap<String, PublicKey>>,
+    remote_whitelist: Option<HashMap<String, VerifyKey>>,
 }
 
 impl<B> Resolver<B> {
@@ -359,7 +349,7 @@ impl<B> Resolver<B> {
 
     pub fn remote_whitelist(
         &mut self,
-        remote_whitelist: Option<HashMap<String, PublicKey>>,
+        remote_whitelist: Option<HashMap<String, VerifyKey>>,
     ) -> &mut Self {
         self.remote_whitelist = remote_whitelist;
         self
@@ -367,7 +357,7 @@ impl<B> Resolver<B> {
 }
 
 impl<B: Backend> Resolver<B> {
-    pub fn query(&self, host: String, public_key: Option<PublicKey>) -> QueryStream {
+    pub fn query(&self, host: String, public_key: Option<VerifyKey>) -> QueryStream {
         resolve_tree(
             self.backend.clone(),
             host,
@@ -426,7 +416,9 @@ mod tests {
             .collect::<HashMap<_, _>>();
 
         let mut s = Resolver::new(Arc::new(data))
-            .remote_whitelist(Some(hashmap![]))
+            .remote_whitelist(Some(hashmap!{
+                "morenodes.example.org".to_string() => VerifyKey::from_encoded_point(&EncodedPoint::from_bytes(&hex::decode("049f88229042fef9200246f49f94d9b77c4e954721442714e85850cb6d9e5daf2d880ea0e53cb3ac1a75f9923c2726a4f941f7d326781baa6380754a360de5c2b6").unwrap()).unwrap()).unwrap()
+            }))
             .query(DOMAIN.to_string(), None);
         let mut out = HashSet::new();
         while let Some(record) = s.try_next().await.unwrap() {

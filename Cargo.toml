@@ -12,17 +12,19 @@ async-stream = "0.3"
 async-trait = "0.1"
 data-encoding = "2"
 derive_more = "0.99"
-enr = "0.2"
+enr = { git = "https://github.com/rust-ethereum/enr", default-features = false, features = ["k256"] }
 ethereum-types = "0.9"
-libsecp256k1 = "0.3"
+k256 = { version = "0.5", features = ["ecdsa", "keccak256"] }
 log = "0.4"
 maplit = "1"
 sha3 = "0.9"
+signature = { version = "1", features = ["std"] }
 tokio = { version = "0.2", features = ["stream"] }
 trust-dns-resolver = { version = "0.19", optional = true }
 
 [dev-dependencies]
 env_logger = "0.7"
+hex = "0.4"
 tokio = { version = "0.2", features = ["full"] }
 
 [features]
