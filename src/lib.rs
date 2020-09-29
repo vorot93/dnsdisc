@@ -6,7 +6,6 @@ use k256::{
     ecdsa::{recoverable::Signature, signature::Signature as _, SigningKey, VerifyKey},
     EncodedPoint,
 };
-use log::*;
 use maplit::hashset;
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
@@ -17,6 +16,7 @@ use std::{
     sync::Arc,
 };
 use tokio::stream::{Stream, StreamExt};
+use tracing::*;
 
 mod backend;
 pub use crate::backend::Backend;
@@ -373,10 +373,13 @@ mod tests {
     use super::*;
     use maplit::hashmap;
     use std::collections::{HashMap, HashSet};
+    use tracing_subscriber::EnvFilter;
 
     #[tokio::test]
     async fn eip_example() {
-        env_logger::init();
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::from_default_env())
+            .try_init();
 
         const DOMAIN: &str = "mynodes.org";
         const TEST_RECORDS: &[(Option<&str>, &str)] = &[

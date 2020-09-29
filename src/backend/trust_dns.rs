@@ -1,7 +1,7 @@
 use super::Backend;
 use crate::{DnsRecord, StdError};
 use async_trait::async_trait;
-use log::*;
+use tracing::*;
 use trust_dns_resolver::{
     error::ResolveErrorKind, proto::DnsHandle, AsyncResolver, ConnectionProvider,
 };
