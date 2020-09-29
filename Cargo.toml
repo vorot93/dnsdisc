@@ -31,5 +31,5 @@ tracing-subscriber = "0.2"
 trust-dns = ["trust-dns-resolver"]
 
 [[example]]
-name = "request"
+name = "query"
 required-features = ["trust-dns"]
