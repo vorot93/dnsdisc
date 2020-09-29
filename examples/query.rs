@@ -1,24 +1,26 @@
 use std::sync::Arc;
 use tokio::stream::StreamExt;
+use tracing::*;
 use tracing_subscriber::EnvFilter;
 use trust_dns_resolver::{config::*, TokioAsyncResolver};
+
+const DNS_ROOT: &str = "all.mainnet.ethdisco.net";
 
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
+        .with_env_filter(EnvFilter::from_default_env().add_directive("query=info".parse().unwrap()))
         .init();
 
     let resolver = TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default())
         .await
         .unwrap();
 
-    let mut st = dnsdisc::Resolver::new(Arc::new(resolver))
-        .query("all.mainnet.ethdisco.net".to_string(), None);
+    let mut st = dnsdisc::Resolver::new(Arc::new(resolver)).query(DNS_ROOT, None);
     let mut total = 0;
     while let Some(record) = st.try_next().await.unwrap() {
-        println!("Got record: {}", record);
+        info!("Got record: {}", record);
         total += 1;
     }
-    println!("Resolved {} records", total);
+    info!("Resolved {} records", total);
 }

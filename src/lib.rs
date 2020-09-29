@@ -357,10 +357,10 @@ impl<B> Resolver<B> {
 }
 
 impl<B: Backend> Resolver<B> {
-    pub fn query(&self, host: String, public_key: Option<VerifyKey>) -> QueryStream {
+    pub fn query(&self, host: impl Display, public_key: Option<VerifyKey>) -> QueryStream {
         resolve_tree(
             self.backend.clone(),
-            host,
+            host.to_string(),
             public_key,
             self.seen_sequence,
             self.remote_whitelist.clone(),
