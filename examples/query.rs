@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 use tokio::stream::StreamExt;
 use tracing::*;
 use tracing_subscriber::EnvFilter;
@@ -18,9 +18,17 @@ async fn main() {
 
     let mut st = dnsdisc::Resolver::new(Arc::new(resolver)).query(DNS_ROOT, None);
     let mut total = 0;
+    let start = Instant::now();
     while let Some(record) = st.try_next().await.unwrap() {
         info!("Got record: {}", record);
         total += 1;
     }
-    info!("Resolved {} records", total);
+
+    let dur = Instant::now() - start;
+    info!(
+        "Resolved {} records in {}.{} seconds",
+        total,
+        dur.as_secs(),
+        dur.as_millis()
+    );
 }
