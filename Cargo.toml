@@ -12,7 +12,7 @@ async-stream = "0.3"
 async-trait = "0.1"
 data-encoding = "2"
 derive_more = "0.99"
-enr = { git = "https://github.com/rust-ethereum/enr", default-features = false, features = ["k256"] }
+enr = { version = "0.3", default-features = false, features = ["k256"] }
 k256 = { version = "0.5", features = ["ecdsa", "keccak256"] }
 maplit = "1"
 sha3 = "0.9"
