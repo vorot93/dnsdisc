@@ -8,7 +8,7 @@ use k256::{
 };
 use maplit::hashset;
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     fmt,
     fmt::{Display, Formatter},
     pin::Pin,
@@ -85,7 +85,7 @@ pub enum DnsRecord {
         domain: String,
     },
     Branch {
-        children: BTreeSet<Base32Hash>,
+        children: HashSet<Base32Hash>,
     },
     Enr {
         record: Enr,
@@ -192,7 +192,7 @@ impl FromStr for DnsRecord {
                     }
                     Err(e) => Some(Err(StdError::from(e))),
                 })
-                .collect::<Result<BTreeSet<_>, StdError>>()?;
+                .collect::<Result<_, StdError>>()?;
 
             return Ok(DnsRecord::Branch { children });
         }
@@ -250,13 +250,13 @@ fn resolve_branch<B: Backend>(
                             .await?;
                         if let Some(record) = record {
                             trace!("Resolved record {}: {:?}", subdomain, record);
-                            match &record {
+                            match record {
                                 DnsRecord::Branch { children } => {
                                     let mut t = resolve_branch(
                                         task_group.clone(),
                                         backend,
                                         host,
-                                        children.iter().copied().collect(),
+                                        children,
                                         kind,
                                     );
                                     while let Some(item) = t.try_next().await? {
@@ -267,13 +267,16 @@ fn resolve_branch<B: Backend>(
                                 }
                                 DnsRecord::Link { public_key, domain } => {
                                     if let BranchKind::Link { remote_whitelist } = &kind {
-                                        if domain_is_allowed(&remote_whitelist, domain, public_key)
-                                        {
+                                        if domain_is_allowed(
+                                            &remote_whitelist,
+                                            &domain,
+                                            &public_key,
+                                        ) {
                                             let mut t = resolve_tree(
                                                 Some(task_group.clone()),
                                                 backend.clone(),
                                                 domain.clone(),
-                                                Some(*public_key),
+                                                Some(public_key),
                                                 None,
                                                 remote_whitelist.clone(),
                                             );
@@ -287,6 +290,11 @@ fn resolve_branch<B: Backend>(
                                             );
                                         }
                                         return Ok(());
+                                    } else {
+                                        return Err(StdError::from(format!(
+                                            "Unexpected link record in ENR tree: {}",
+                                            subdomain
+                                        )));
                                     }
                                 }
                                 DnsRecord::Enr { record } => {
@@ -294,12 +302,20 @@ fn resolve_branch<B: Backend>(
                                         let _ = tx.send(Ok(record.clone())).await;
 
                                         return Ok(());
+                                    } else {
+                                        return Err(StdError::from(format!(
+                                            "Unexpected ENR record in link tree: {}",
+                                            subdomain
+                                        )));
                                     }
                                 }
-                                _ => {}
+                                _ => {
+                                    return Err(StdError::from(format!(
+                                        "Unexpected record: {}",
+                                        subdomain
+                                    )));
+                                }
                             }
-
-                            return Err(StdError::from(format!("Unexpected record: {:?}", record)));
                         } else {
                             warn!("Child {} is empty", subdomain);
                         }
