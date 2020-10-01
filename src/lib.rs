@@ -15,6 +15,7 @@ use std::{
     str::FromStr,
     sync::Arc,
 };
+use task_group::TaskGroup;
 use tokio::stream::{Stream, StreamExt, StreamMap};
 use tracing::*;
 
@@ -225,68 +226,98 @@ enum BranchKind {
 }
 
 fn resolve_branch<B: Backend>(
+    task_group: Arc<TaskGroup>,
     backend: Arc<B>,
     host: String,
     children: HashSet<Base32Hash>,
     kind: BranchKind,
 ) -> QueryStream {
-    let mut branches_res = StreamMap::new();
+    let (tx, mut branches_res) = tokio::sync::mpsc::channel(1);
     for child in &children {
-        let subdomain = *child;
-        let backend = backend.clone();
-        let host = host.clone();
-        let kind = kind.clone();
-        branches_res.insert(subdomain, Box::pin(try_stream! {
-            let record = backend.get_record(format!("{}.{}", subdomain, host)).await?;
-            if let Some(record) = record {
-                trace!("Resolved record {}: {:?}", subdomain, record);
-                match &record {
-                    DnsRecord::Branch {
-                        children
-                    } => {
-                        let mut t = resolve_branch(backend, host, children.iter().copied().collect(), kind);
-                        while let Some(item) = t.try_next().await? {
-                            yield item;
-                        }
-                        return;
-                    }
-                    DnsRecord::Link {
-                        public_key,
-                        domain,
-                    } => {
-                        if let BranchKind::Link { remote_whitelist } = &kind {
-                            if domain_is_allowed(&remote_whitelist, domain, public_key) {
-                                let mut t = resolve_tree(backend.clone(), domain.clone(), Some(public_key.clone()), None, remote_whitelist.clone());
-                                while let Some(item) = t.try_next().await? {
-                                    yield item;
-                                }
-                            } else {
-                                trace!("Skipping subtree for forbidden domain: {}", domain);
-                            }
-                            return;
-                        }
-                    }
-                    DnsRecord::Enr {
-                        record
-                    } => {
-                        if let BranchKind::Enr = &kind {
-                            yield record.clone();
-                            return;
-                        }
-                    }
-                    _ => {}
-                }
+        task_group.spawn({
+            let subdomain = *child;
+            let mut tx = tx.clone();
+            let backend = backend.clone();
+            let host = host.clone();
+            let kind = kind.clone();
+            let task_group = task_group.clone();
+            async move {
+                if let Err(e) = {
+                    let mut tx = tx.clone();
+                    async move {
+                        let record = backend
+                            .get_record(format!("{}.{}", subdomain, host))
+                            .await?;
+                        if let Some(record) = record {
+                            trace!("Resolved record {}: {:?}", subdomain, record);
+                            match &record {
+                                DnsRecord::Branch { children } => {
+                                    let mut t = resolve_branch(
+                                        task_group.clone(),
+                                        backend,
+                                        host,
+                                        children.iter().copied().collect(),
+                                        kind,
+                                    );
+                                    while let Some(item) = t.try_next().await? {
+                                        tx.send(Ok(item)).await;
+                                    }
 
-                Err(StdError::from(format!("Unexpected record: {:?}", record)))?;
-            } else {
-                warn!("Child {} is empty", subdomain);
+                                    return Ok(());
+                                }
+                                DnsRecord::Link { public_key, domain } => {
+                                    if let BranchKind::Link { remote_whitelist } = &kind {
+                                        if domain_is_allowed(&remote_whitelist, domain, public_key)
+                                        {
+                                            let mut t = resolve_tree(
+                                                Some(task_group.clone()),
+                                                backend.clone(),
+                                                domain.clone(),
+                                                Some(public_key.clone()),
+                                                None,
+                                                remote_whitelist.clone(),
+                                            );
+                                            while let Some(item) = t.try_next().await? {
+                                                tx.send(Ok(item)).await;
+                                            }
+                                        } else {
+                                            trace!(
+                                                "Skipping subtree for forbidden domain: {}",
+                                                domain
+                                            );
+                                        }
+                                        return Ok(());
+                                    }
+                                }
+                                DnsRecord::Enr { record } => {
+                                    if let BranchKind::Enr = &kind {
+                                        tx.send(Ok(record.clone())).await;
+
+                                        return Ok(());
+                                    }
+                                }
+                                _ => {}
+                            }
+
+                            return Err(StdError::from(format!("Unexpected record: {:?}", record)));
+                        } else {
+                            warn!("Child {} is empty", subdomain);
+                        }
+
+                        Ok(())
+                    }
+                }
+                .await
+                {
+                    tx.send(Err(e)).await;
+                }
             }
-        }) as QueryStream);
+        });
     }
 
     Box::pin(stream! {
         trace!("Resolving branch {:?}", children);
-        while let Some((_, v)) = branches_res.next().await {
+        while let Some(v) = branches_res.next().await {
             yield v;
         }
         trace!("Branch {:?} resolution complete", children);
@@ -294,6 +325,7 @@ fn resolve_branch<B: Backend>(
 }
 
 fn resolve_tree<B: Backend>(
+    task_group: Option<Arc<TaskGroup>>,
     backend: Arc<B>,
     host: String,
     public_key: Option<VerifyKey>,
@@ -301,6 +333,7 @@ fn resolve_tree<B: Backend>(
     remote_whitelist: Option<HashMap<String, VerifyKey>>,
 ) -> QueryStream {
     Box::pin(try_stream! {
+        let task_group = task_group.unwrap_or_default();
         let record = backend.get_record(host.clone()).await?;
         if let Some(record) = &record {
             if let DnsRecord::Root(record) = &record {
@@ -319,12 +352,12 @@ fn resolve_tree<B: Backend>(
                     }
                 }
 
-                let mut s = resolve_branch(backend.clone(), host.clone(), hashset![ *link_root ], BranchKind::Link { remote_whitelist });
+                let mut s = resolve_branch(task_group.clone(), backend.clone(), host.clone(), hashset![ *link_root ], BranchKind::Link { remote_whitelist });
                 while let Some(record) = s.try_next().await? {
                     yield record;
                 }
 
-                let mut s = resolve_branch(backend.clone(), host.clone(), hashset![ *enr_root ], BranchKind::Enr);
+                let mut s = resolve_branch(task_group.clone(),backend.clone(), host.clone(), hashset![ *enr_root ], BranchKind::Enr);
                 while let Some(record) = s.try_next().await? {
                     yield record;
                 }
@@ -370,6 +403,7 @@ impl<B> Resolver<B> {
 impl<B: Backend> Resolver<B> {
     pub fn query(&self, host: impl Display, public_key: Option<VerifyKey>) -> QueryStream {
         resolve_tree(
+            Some(Arc::new(TaskGroup::default())),
             self.backend.clone(),
             host.to_string(),
             public_key,

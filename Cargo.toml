@@ -17,6 +17,7 @@ k256 = { version = "0.5", features = ["ecdsa", "keccak256"] }
 maplit = "1"
 sha3 = "0.9"
 signature = { version = "1", features = ["std"] }
+task-group = { git = "https://github.com/vorot93/task-group" }
 tokio = { version = "0.2", features = ["stream"] }
 tracing = "0.1"
 tracing-futures = "0.2"
