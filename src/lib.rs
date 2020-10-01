@@ -208,7 +208,7 @@ impl FromStr for DnsRecord {
 }
 
 fn domain_is_allowed(
-    whitelist: &Option<HashMap<String, VerifyKey>>,
+    whitelist: &Option<Arc<HashMap<String, VerifyKey>>>,
     domain: &str,
     public_key: &VerifyKey,
 ) -> bool {
@@ -221,7 +221,7 @@ fn domain_is_allowed(
 enum BranchKind {
     Enr,
     Link {
-        remote_whitelist: Option<HashMap<String, VerifyKey>>,
+        remote_whitelist: Option<Arc<HashMap<String, VerifyKey>>>,
     },
 }
 
@@ -330,7 +330,7 @@ fn resolve_tree<B: Backend>(
     host: String,
     public_key: Option<VerifyKey>,
     seen_sequence: Option<usize>,
-    remote_whitelist: Option<HashMap<String, VerifyKey>>,
+    remote_whitelist: Option<Arc<HashMap<String, VerifyKey>>>,
 ) -> QueryStream {
     Box::pin(try_stream! {
         let task_group = task_group.unwrap_or_default();
@@ -374,7 +374,7 @@ fn resolve_tree<B: Backend>(
 pub struct Resolver<B> {
     backend: Arc<B>,
     seen_sequence: Option<usize>,
-    remote_whitelist: Option<HashMap<String, VerifyKey>>,
+    remote_whitelist: Option<Arc<HashMap<String, VerifyKey>>>,
 }
 
 impl<B> Resolver<B> {
@@ -395,7 +395,7 @@ impl<B> Resolver<B> {
         &mut self,
         remote_whitelist: Option<HashMap<String, VerifyKey>>,
     ) -> &mut Self {
-        self.remote_whitelist = remote_whitelist;
+        self.remote_whitelist = remote_whitelist.map(Arc::new);
         self
     }
 }
