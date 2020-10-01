@@ -1,5 +1,5 @@
 use arrayvec::ArrayString;
-use async_stream::try_stream;
+use async_stream::{stream, try_stream};
 use data_encoding::*;
 use derive_more::{Deref, Display};
 use k256::{
@@ -15,18 +15,19 @@ use std::{
     str::FromStr,
     sync::Arc,
 };
-use tokio::stream::{Stream, StreamExt};
+use tokio::stream::{Stream, StreamExt, StreamMap};
 use tracing::*;
 
 mod backend;
 pub use crate::backend::Backend;
 
 pub type StdError = Box<dyn std::error::Error + Send + Sync>;
+pub type StdResult<T> = Result<T, StdError>;
 
 pub type Enr = enr::Enr<SigningKey>;
 type Base32Hash = ArrayString<[u8; BASE32_HASH_LEN]>;
 
-pub type QueryStream = Pin<Box<dyn Stream<Item = Result<Enr, StdError>> + Send + 'static>>;
+pub type QueryStream = Pin<Box<dyn Stream<Item = StdResult<Enr>> + Send + 'static>>;
 
 pub const BASE32_HASH_LEN: usize = 26;
 pub const ROOT_PREFIX: &str = "enrtree-root:v1";
@@ -229,10 +230,13 @@ fn resolve_branch<B: Backend>(
     children: HashSet<Base32Hash>,
     kind: BranchKind,
 ) -> QueryStream {
-    Box::pin(try_stream! {
-        trace!("Resolving branch {:?}", children);
-        for child in &children {
-            let subdomain = *child;
+    let mut branches_res = StreamMap::new();
+    for child in &children {
+        let subdomain = *child;
+        let backend = backend.clone();
+        let host = host.clone();
+        let kind = kind.clone();
+        branches_res.insert(subdomain, Box::pin(try_stream! {
             let record = backend.get_record(format!("{}.{}", subdomain, host)).await?;
             if let Some(record) = record {
                 trace!("Resolved record {}: {:?}", subdomain, record);
@@ -240,11 +244,11 @@ fn resolve_branch<B: Backend>(
                     DnsRecord::Branch {
                         children
                     } => {
-                        let mut t = resolve_branch(backend.clone(), host.clone(), children.iter().copied().collect(), kind.clone());
+                        let mut t = resolve_branch(backend, host, children.iter().copied().collect(), kind);
                         while let Some(item) = t.try_next().await? {
                             yield item;
                         }
-                        continue;
+                        return;
                     }
                     DnsRecord::Link {
                         public_key,
@@ -259,7 +263,7 @@ fn resolve_branch<B: Backend>(
                             } else {
                                 trace!("Skipping subtree for forbidden domain: {}", domain);
                             }
-                            continue;
+                            return;
                         }
                     }
                     DnsRecord::Enr {
@@ -267,7 +271,7 @@ fn resolve_branch<B: Backend>(
                     } => {
                         if let BranchKind::Enr = &kind {
                             yield record.clone();
-                            continue
+                            return;
                         }
                     }
                     _ => {}
@@ -277,6 +281,13 @@ fn resolve_branch<B: Backend>(
             } else {
                 warn!("Child {} is empty", subdomain);
             }
+        }) as QueryStream);
+    }
+
+    Box::pin(stream! {
+        trace!("Resolving branch {:?}", children);
+        while let Some((_, v)) = branches_res.next().await {
+            yield v;
         }
         trace!("Branch {:?} resolution complete", children);
     })
