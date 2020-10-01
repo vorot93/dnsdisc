@@ -252,13 +252,8 @@ fn resolve_branch<B: Backend>(
                             trace!("Resolved record {}: {:?}", subdomain, record);
                             match record {
                                 DnsRecord::Branch { children } => {
-                                    let mut t = resolve_branch(
-                                        task_group.clone(),
-                                        backend,
-                                        host,
-                                        children,
-                                        kind,
-                                    );
+                                    let mut t =
+                                        resolve_branch(task_group, backend, host, children, kind);
                                     while let Some(item) = t.try_next().await? {
                                         let _ = tx.send(Ok(item)).await;
                                     }
@@ -273,9 +268,9 @@ fn resolve_branch<B: Backend>(
                                             &public_key,
                                         ) {
                                             let mut t = resolve_tree(
-                                                Some(task_group.clone()),
-                                                backend.clone(),
-                                                domain.clone(),
+                                                Some(task_group),
+                                                backend,
+                                                domain,
                                                 Some(public_key),
                                                 None,
                                                 remote_whitelist.clone(),
@@ -299,7 +294,7 @@ fn resolve_branch<B: Backend>(
                                 }
                                 DnsRecord::Enr { record } => {
                                     if let BranchKind::Enr = &kind {
-                                        let _ = tx.send(Ok(record.clone())).await;
+                                        let _ = tx.send(Ok(record)).await;
 
                                         return Ok(());
                                     } else {
@@ -309,9 +304,9 @@ fn resolve_branch<B: Backend>(
                                         )));
                                     }
                                 }
-                                _ => {
+                                DnsRecord::Root { .. } => {
                                     return Err(StdError::from(format!(
-                                        "Unexpected record: {}",
+                                        "Unexpected root record: {}",
                                         subdomain
                                     )));
                                 }

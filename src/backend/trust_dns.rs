@@ -14,9 +14,7 @@ where
 {
     async fn get_record(&self, fqdn: String) -> Result<Option<DnsRecord>, StdError> {
         trace!("Resolving FQDN {}", fqdn);
-        let err = || StdError::from(format!("No records found for {}", fqdn));
-
-        Ok(match self.txt_lookup(fqdn.clone()).await {
+        Ok(match self.txt_lookup(format!("{}.", fqdn)).await {
             Err(e) => {
                 if let ResolveErrorKind::NoRecordsFound { .. } = e.kind() {
                     None
@@ -24,18 +22,15 @@ where
                     return Err(e.into());
                 }
             }
-            Ok(v) => Some(
-                String::from_utf8(
-                    v.iter()
-                        .next()
-                        .ok_or_else(err)?
-                        .iter()
-                        .next()
-                        .ok_or_else(err)?
-                        .to_vec(),
-                )?
-                .parse()?,
-            ),
+            Ok(v) => {
+                if let Some(txt) = v.into_iter().next() {
+                    if let Some(txt_entry) = txt.iter().next() {
+                        return Ok(Some(std::str::from_utf8(&*txt_entry)?.parse()?));
+                    }
+                }
+
+                None
+            }
         })
     }
 }
