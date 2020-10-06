@@ -384,6 +384,7 @@ fn resolve_tree<B: Backend>(
 
 pub struct Resolver<B> {
     backend: Arc<B>,
+    task_group: Option<Arc<TaskGroup>>,
     seen_sequence: Option<usize>,
     remote_whitelist: Option<Arc<HashMap<String, VerifyKey>>>,
 }
@@ -392,21 +393,27 @@ impl<B> Resolver<B> {
     pub fn new(backend: Arc<B>) -> Self {
         Self {
             backend,
+            task_group: None,
             seen_sequence: None,
             remote_whitelist: None,
         }
     }
 
-    pub fn seen_sequence(&mut self, seen_sequence: Option<usize>) -> &mut Self {
-        self.seen_sequence = seen_sequence;
+    pub fn with_task_group(&mut self, task_group: Arc<TaskGroup>) -> &mut Self {
+        self.task_group = Some(task_group);
         self
     }
 
-    pub fn remote_whitelist(
+    pub fn with_seen_sequence(&mut self, seen_sequence: usize) -> &mut Self {
+        self.seen_sequence = Some(seen_sequence);
+        self
+    }
+
+    pub fn with_remote_whitelist(
         &mut self,
-        remote_whitelist: Option<HashMap<String, VerifyKey>>,
+        remote_whitelist: Arc<HashMap<String, VerifyKey>>,
     ) -> &mut Self {
-        self.remote_whitelist = remote_whitelist.map(Arc::new);
+        self.remote_whitelist = Some(remote_whitelist);
         self
     }
 }
@@ -414,7 +421,7 @@ impl<B> Resolver<B> {
 impl<B: Backend> Resolver<B> {
     pub fn query(&self, host: impl Display, public_key: Option<VerifyKey>) -> QueryStream {
         resolve_tree(
-            Some(Arc::new(TaskGroup::default())),
+            self.task_group.clone(),
             self.backend.clone(),
             host.to_string(),
             public_key,
@@ -475,7 +482,7 @@ mod tests {
             .collect::<HashMap<_, _>>();
 
         let mut s = Resolver::new(Arc::new(data))
-            .remote_whitelist(Some(hashmap!{
+            .with_remote_whitelist(Arc::new(hashmap!{
                 "morenodes.example.org".to_string() => VerifyKey::from_encoded_point(&EncodedPoint::from_bytes(&hex::decode("049f88229042fef9200246f49f94d9b77c4e954721442714e85850cb6d9e5daf2d880ea0e53cb3ac1a75f9923c2726a4f941f7d326781baa6380754a360de5c2b6").unwrap()).unwrap()).unwrap()
             }))
             .query(DOMAIN.to_string(), None);
