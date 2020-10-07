@@ -233,97 +233,101 @@ fn resolve_branch<B: Backend>(
     kind: BranchKind,
 ) -> QueryStream {
     let (tx, mut branches_res) = tokio::sync::mpsc::channel(1);
-    for child in &children {
-        task_group.spawn({
-            let subdomain = *child;
-            let mut tx = tx.clone();
-            let backend = backend.clone();
-            let host = host.clone();
-            let kind = kind.clone();
-            let task_group = task_group.clone();
-            async move {
-                if let Err(e) = {
-                    let mut tx = tx.clone();
-                    async move {
-                        let record = backend
-                            .get_record(format!("{}.{}", subdomain, host))
-                            .await?;
-                        if let Some(record) = record {
-                            trace!("Resolved record {}: {:?}", subdomain, record);
-                            match record {
-                                DnsRecord::Branch { children } => {
-                                    let mut t =
-                                        resolve_branch(task_group, backend, host, children, kind);
-                                    while let Some(item) = t.try_next().await? {
-                                        let _ = tx.send(Ok(item)).await;
-                                    }
-
-                                    return Ok(());
-                                }
-                                DnsRecord::Link { public_key, domain } => {
-                                    if let BranchKind::Link { remote_whitelist } = &kind {
-                                        if domain_is_allowed(
-                                            &remote_whitelist,
-                                            &domain,
-                                            &public_key,
-                                        ) {
-                                            let mut t = resolve_tree(
-                                                Some(task_group),
-                                                backend,
-                                                domain,
-                                                Some(public_key),
-                                                None,
-                                                remote_whitelist.clone(),
-                                            );
-                                            while let Some(item) = t.try_next().await? {
-                                                let _ = tx.send(Ok(item)).await;
-                                            }
-                                        } else {
-                                            trace!(
-                                                "Skipping subtree for forbidden domain: {}",
-                                                domain
-                                            );
+    for subdomain in &children {
+        let fqdn = format!("{}.{}", subdomain, host);
+        task_group.spawn_with_name(
+            {
+                let subdomain = *subdomain;
+                let mut tx = tx.clone();
+                let backend = backend.clone();
+                let host = host.clone();
+                let kind = kind.clone();
+                let fqdn = fqdn.clone();
+                let task_group = task_group.clone();
+                async move {
+                    if let Err(e) = {
+                        let mut tx = tx.clone();
+                        async move {
+                            let record = backend.get_record(fqdn).await?;
+                            if let Some(record) = record {
+                                trace!("Resolved record {}: {:?}", subdomain, record);
+                                match record {
+                                    DnsRecord::Branch { children } => {
+                                        let mut t = resolve_branch(
+                                            task_group, backend, host, children, kind,
+                                        );
+                                        while let Some(item) = t.try_next().await? {
+                                            let _ = tx.send(Ok(item)).await;
                                         }
-                                        return Ok(());
-                                    } else {
-                                        return Err(StdError::from(format!(
-                                            "Unexpected link record in ENR tree: {}",
-                                            subdomain
-                                        )));
-                                    }
-                                }
-                                DnsRecord::Enr { record } => {
-                                    if let BranchKind::Enr = &kind {
-                                        let _ = tx.send(Ok(record)).await;
 
                                         return Ok(());
-                                    } else {
+                                    }
+                                    DnsRecord::Link { public_key, domain } => {
+                                        if let BranchKind::Link { remote_whitelist } = &kind {
+                                            if domain_is_allowed(
+                                                &remote_whitelist,
+                                                &domain,
+                                                &public_key,
+                                            ) {
+                                                let mut t = resolve_tree(
+                                                    Some(task_group),
+                                                    backend,
+                                                    domain,
+                                                    Some(public_key),
+                                                    None,
+                                                    remote_whitelist.clone(),
+                                                );
+                                                while let Some(item) = t.try_next().await? {
+                                                    let _ = tx.send(Ok(item)).await;
+                                                }
+                                            } else {
+                                                trace!(
+                                                    "Skipping subtree for forbidden domain: {}",
+                                                    domain
+                                                );
+                                            }
+                                            return Ok(());
+                                        } else {
+                                            return Err(StdError::from(format!(
+                                                "Unexpected link record in ENR tree: {}",
+                                                subdomain
+                                            )));
+                                        }
+                                    }
+                                    DnsRecord::Enr { record } => {
+                                        if let BranchKind::Enr = &kind {
+                                            let _ = tx.send(Ok(record)).await;
+
+                                            return Ok(());
+                                        } else {
+                                            return Err(StdError::from(format!(
+                                                "Unexpected ENR record in link tree: {}",
+                                                subdomain
+                                            )));
+                                        }
+                                    }
+                                    DnsRecord::Root { .. } => {
                                         return Err(StdError::from(format!(
-                                            "Unexpected ENR record in link tree: {}",
+                                            "Unexpected root record: {}",
                                             subdomain
                                         )));
                                     }
                                 }
-                                DnsRecord::Root { .. } => {
-                                    return Err(StdError::from(format!(
-                                        "Unexpected root record: {}",
-                                        subdomain
-                                    )));
-                                }
+                            } else {
+                                warn!("Child {} is empty", subdomain);
                             }
-                        } else {
-                            warn!("Child {} is empty", subdomain);
-                        }
 
-                        Ok(())
+                            Ok(())
+                        }
+                    }
+                    .await
+                    {
+                        let _ = tx.send(Err(e)).await;
                     }
                 }
-                .await
-                {
-                    let _ = tx.send(Err(e)).await;
-                }
-            }
-        });
+            },
+            format!("DNS discovery: {}", fqdn),
+        );
     }
 
     Box::pin(stream! {
