@@ -1,3 +1,4 @@
+use anyhow::{anyhow, bail};
 use arrayvec::ArrayString;
 use async_stream::{stream, try_stream};
 use data_encoding::*;
@@ -22,13 +23,10 @@ use tracing::*;
 mod backend;
 pub use crate::backend::Backend;
 
-pub type StdError = Box<dyn std::error::Error + Send + Sync>;
-pub type StdResult<T> = Result<T, StdError>;
-
 pub type Enr = enr::Enr<SigningKey>;
 type Base32Hash = ArrayString<[u8; BASE32_HASH_LEN]>;
 
-pub type QueryStream = Pin<Box<dyn Stream<Item = StdResult<Enr>> + Send + 'static>>;
+pub type QueryStream = Pin<Box<dyn Stream<Item = anyhow::Result<Enr>> + Send + 'static>>;
 
 pub const BASE32_HASH_LEN: usize = 26;
 pub const ROOT_PREFIX: &str = "enrtree-root:v1";
@@ -58,7 +56,7 @@ pub struct UnsignedRoot {
 }
 
 impl RootRecord {
-    fn verify(&self, pk: &VerifyKey) -> Result<bool, StdError> {
+    fn verify(&self, pk: &VerifyKey) -> anyhow::Result<bool> {
         Ok(self
             .signature
             .recover_verify_key(self.to_string().as_bytes())?
@@ -119,7 +117,7 @@ impl Display for DnsRecord {
 }
 
 impl FromStr for DnsRecord {
-    type Err = StdError;
+    type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         trace!("Parsing record {}", s);
@@ -143,17 +141,17 @@ impl FromStr for DnsRecord {
                     let v = BASE64URL_NOPAD.decode(v.as_bytes())?;
                     sig = Some(Signature::from_bytes(&v)?);
                 } else {
-                    return Err(format!("Invalid string: {}", entry).into());
+                    bail!("Invalid string: {}", entry);
                 }
             }
 
             let v = RootRecord {
                 base: UnsignedRoot {
-                    enr_root: e.ok_or_else(|| StdError::from("ENR root absent"))?,
-                    link_root: l.ok_or_else(|| StdError::from("Link root absent"))?,
-                    sequence: seq.ok_or_else(|| StdError::from("Sequence not found"))?,
+                    enr_root: e.ok_or_else(|| anyhow!("ENR root absent"))?,
+                    link_root: l.ok_or_else(|| anyhow!("Link root absent"))?,
+                    sequence: seq.ok_or_else(|| anyhow!("Sequence not found"))?,
                 },
-                signature: sig.ok_or_else(|| StdError::from("Signature not found"))?,
+                signature: sig.ok_or_else(|| anyhow!("Signature not found"))?,
             };
 
             trace!("Successfully parsed {:?}", v);
@@ -166,13 +164,13 @@ impl FromStr for DnsRecord {
             let public_key = VerifyKey::from_encoded_point(&EncodedPoint::from_bytes(
                 &BASE32_NOPAD.decode(
                     &it.next()
-                        .ok_or_else(|| StdError::from("Public key not found"))?
+                        .ok_or_else(|| anyhow!("Public key not found"))?
                         .as_bytes(),
                 )?,
             )?)?;
             let domain = it
                 .next()
-                .ok_or_else(|| StdError::from("Domain not found"))?
+                .ok_or_else(|| anyhow!("Domain not found"))?
                 .to_string();
 
             return Ok(DnsRecord::Link { public_key, domain });
@@ -190,20 +188,20 @@ impl FromStr for DnsRecord {
                             Some(Ok(v))
                         }
                     }
-                    Err(e) => Some(Err(StdError::from(e))),
+                    Err(e) => Some(Err(anyhow::Error::new(e))),
                 })
-                .collect::<Result<_, StdError>>()?;
+                .collect::<anyhow::Result<_>>()?;
 
             return Ok(DnsRecord::Branch { children });
         }
 
         if s.starts_with(ENR_PREFIX) {
-            let record = s.parse::<Enr>()?;
+            let record = s.parse::<Enr>().map_err(anyhow::Error::msg)?;
 
             return Ok(DnsRecord::Enr { record });
         }
 
-        Err(format!("Invalid string: {}", s).into())
+        bail!("Invalid string: {}", s)
     }
 }
 
@@ -288,10 +286,10 @@ fn resolve_branch<B: Backend>(
                                             }
                                             return Ok(());
                                         } else {
-                                            return Err(StdError::from(format!(
+                                            return Err(anyhow!(
                                                 "Unexpected link record in ENR tree: {}",
                                                 subdomain
-                                            )));
+                                            ));
                                         }
                                     }
                                     DnsRecord::Enr { record } => {
@@ -300,17 +298,17 @@ fn resolve_branch<B: Backend>(
 
                                             return Ok(());
                                         } else {
-                                            return Err(StdError::from(format!(
+                                            return Err(anyhow!(
                                                 "Unexpected ENR record in link tree: {}",
                                                 subdomain
-                                            )));
+                                            ));
                                         }
                                     }
                                     DnsRecord::Root { .. } => {
-                                        return Err(StdError::from(format!(
+                                        return Err(anyhow!(
                                             "Unexpected root record: {}",
                                             subdomain
-                                        )));
+                                        ));
                                     }
                                 }
                             } else {
@@ -354,7 +352,7 @@ fn resolve_tree<B: Backend>(
             if let DnsRecord::Root(record) = &record {
                 if let Some(pk) = public_key {
                     if !record.verify(&pk)? {
-                        Err(StdError::from("Public key does not match"))?;
+                        Err(anyhow!("Public key does not match"))?
                     }
                 }
 
@@ -377,7 +375,7 @@ fn resolve_tree<B: Backend>(
                     yield record;
                 }
             } else {
-                Err(StdError::from(format!("Expected root, got {:?}", record)))?;
+                Err(anyhow!("Expected root, got {:?}", record))?
             }
             trace!("Resolution of tree at {} complete", host);
         } else {

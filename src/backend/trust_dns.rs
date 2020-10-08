@@ -1,5 +1,5 @@
 use super::Backend;
-use crate::{DnsRecord, StdError};
+use crate::DnsRecord;
 use async_trait::async_trait;
 use tracing::*;
 use trust_dns_resolver::{
@@ -12,7 +12,7 @@ where
     C: DnsHandle,
     P: ConnectionProvider<Conn = C>,
 {
-    async fn get_record(&self, fqdn: String) -> Result<Option<DnsRecord>, StdError> {
+    async fn get_record(&self, fqdn: String) -> anyhow::Result<Option<DnsRecord>> {
         trace!("Resolving FQDN {}", fqdn);
         Ok(match self.txt_lookup(format!("{}.", fqdn)).await {
             Err(e) => {
