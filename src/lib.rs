@@ -235,7 +235,7 @@ fn resolve_branch<B: Backend>(
         let fqdn = format!("{}.{}", subdomain, host);
         task_group.spawn_with_name(format!("DNS discovery: {}", fqdn), {
             let subdomain = *subdomain;
-            let mut tx = tx.clone();
+            let tx = tx.clone();
             let backend = backend.clone();
             let host = host.clone();
             let kind = kind.clone();
@@ -243,7 +243,7 @@ fn resolve_branch<B: Backend>(
             let task_group = task_group.clone();
             async move {
                 if let Err(e) = {
-                    let mut tx = tx.clone();
+                    let tx = tx.clone();
                     async move {
                         let record = backend.get_record(fqdn).await?;
                         if let Some(record) = record {

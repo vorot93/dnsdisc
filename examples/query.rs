@@ -1,5 +1,6 @@
 use std::{sync::Arc, time::Instant};
 use tokio::stream::StreamExt;
+use tokio_compat_02::FutureExt;
 use tracing::*;
 use tracing_subscriber::EnvFilter;
 use trust_dns_resolver::{config::*, TokioAsyncResolver};
@@ -13,6 +14,7 @@ async fn main() {
         .init();
 
     let resolver = TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default())
+        .compat()
         .await
         .unwrap();
 

@@ -1,6 +1,7 @@
 use super::Backend;
 use crate::DnsRecord;
 use async_trait::async_trait;
+use tokio_compat_02::FutureExt;
 use tracing::*;
 use trust_dns_resolver::{
     error::ResolveErrorKind, proto::DnsHandle, AsyncResolver, ConnectionProvider,
@@ -14,7 +15,7 @@ where
 {
     async fn get_record(&self, fqdn: String) -> anyhow::Result<Option<DnsRecord>> {
         trace!("Resolving FQDN {}", fqdn);
-        Ok(match self.txt_lookup(format!("{}.", fqdn)).await {
+        Ok(match self.txt_lookup(format!("{}.", fqdn)).compat().await {
             Err(e) => {
                 if let ResolveErrorKind::NoRecordsFound { .. } = e.kind() {
                     None
