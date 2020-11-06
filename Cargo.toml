@@ -11,13 +11,13 @@ anyhow = "1"
 arrayvec = "0.5"
 async-stream = "0.3"
 async-trait = "0.1"
+auto_impl = "0.4"
 data-encoding = "2"
 derive_more = "0.99"
-enr = { version = "0.4", default-features = false, features = ["k256"] }
-k256 = { version = "0.5", features = ["ecdsa", "keccak256"] }
+educe = { version = "0.4", features = ["Debug"] }
+enr = { version = "0.4", default-features = false }
 maplit = "1"
 sha3 = "0.9"
-signature = { version = "1", features = ["std"] }
 task-group = { git = "https://github.com/vorot93/task-group" }
 tokio = { version = "0.3", features = ["sync", "stream"] }
 tokio-compat-02 = "0.1"
@@ -26,9 +26,14 @@ tracing-futures = "0.2"
 trust-dns-resolver = { version = "0.19", optional = true }
 
 [dev-dependencies]
+enr = { version = "0.4", default-features = false, features = ["k256"] }
 hex = "0.4"
+k256 = { version = "0.5", features = ["ecdsa"] }
 tokio = { version = "0.3", features = ["full"] }
 tracing-subscriber = "0.2"
+
+[patch.crates-io]
+enr = { git = "https://github.com/rust-ethereum/enr" }
 
 [features]
 trust-dns = ["trust-dns-resolver"]

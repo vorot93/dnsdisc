@@ -1,6 +1,7 @@
 use super::DnsRecord;
 use async_trait::async_trait;
-use std::sync::Arc;
+use auto_impl::auto_impl;
+use enr::EnrKeyUnambiguous;
 
 pub mod memory;
 
@@ -8,13 +9,10 @@ pub mod memory;
 pub mod trust_dns;
 
 #[async_trait]
+#[auto_impl(&, Box, Arc)]
 pub trait Backend: Send + Sync + 'static {
-    async fn get_record(&self, fqdn: String) -> anyhow::Result<Option<DnsRecord>>;
-}
-
-#[async_trait]
-impl Backend for Arc<dyn Backend> {
-    async fn get_record(&self, fqdn: String) -> anyhow::Result<Option<DnsRecord>> {
-        (**self).get_record(fqdn).await
-    }
+    async fn get_record<K: EnrKeyUnambiguous>(
+        &self,
+        fqdn: String,
+    ) -> anyhow::Result<Option<DnsRecord<K>>>;
 }

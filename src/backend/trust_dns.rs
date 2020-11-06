@@ -1,6 +1,7 @@
 use super::Backend;
 use crate::DnsRecord;
 use async_trait::async_trait;
+use enr::EnrKeyUnambiguous;
 use tokio_compat_02::FutureExt;
 use tracing::*;
 use trust_dns_resolver::{
@@ -13,7 +14,10 @@ where
     C: DnsHandle,
     P: ConnectionProvider<Conn = C>,
 {
-    async fn get_record(&self, fqdn: String) -> anyhow::Result<Option<DnsRecord>> {
+    async fn get_record<K: EnrKeyUnambiguous>(
+        &self,
+        fqdn: String,
+    ) -> anyhow::Result<Option<DnsRecord<K>>> {
         trace!("Resolving FQDN {}", fqdn);
         Ok(match self.txt_lookup(format!("{}.", fqdn)).compat().await {
             Err(e) => {

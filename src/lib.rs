@@ -3,10 +3,8 @@ use arrayvec::ArrayString;
 use async_stream::{stream, try_stream};
 use data_encoding::*;
 use derive_more::{Deref, Display};
-use k256::{
-    ecdsa::{recoverable::Signature, signature::Signature as _, SigningKey, VerifyKey},
-    EncodedPoint,
-};
+use educe::Educe;
+use enr::{Enr, EnrKeyUnambiguous, EnrPublicKey};
 use maplit::hashset;
 use std::{
     collections::{HashMap, HashSet},
@@ -23,10 +21,9 @@ use tracing::*;
 mod backend;
 pub use crate::backend::Backend;
 
-pub type Enr = enr::Enr<SigningKey>;
 type Base32Hash = ArrayString<[u8; BASE32_HASH_LEN]>;
 
-pub type QueryStream = Pin<Box<dyn Stream<Item = anyhow::Result<Enr>> + Send + 'static>>;
+pub type QueryStream<K> = Pin<Box<dyn Stream<Item = anyhow::Result<Enr<K>>> + Send + 'static>>;
 
 pub const BASE32_HASH_LEN: usize = 26;
 pub const ROOT_PREFIX: &str = "enrtree-root:v1";
@@ -38,7 +35,7 @@ pub const ENR_PREFIX: &str = "enr:";
 pub struct RootRecord {
     #[deref]
     base: UnsignedRoot,
-    signature: Signature,
+    signature: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Display)]
@@ -56,11 +53,8 @@ pub struct UnsignedRoot {
 }
 
 impl RootRecord {
-    fn verify(&self, pk: &VerifyKey) -> anyhow::Result<bool> {
-        Ok(self
-            .signature
-            .recover_verify_key(self.to_string().as_bytes())?
-            == *pk)
+    fn verify<K: EnrKeyUnambiguous>(&self, pk: &K::PublicKey) -> anyhow::Result<bool> {
+        Ok(pk.verify_v4(self.to_string().as_bytes(), &self.signature))
     }
 }
 
@@ -75,22 +69,23 @@ impl Display for RootRecord {
     }
 }
 
-#[derive(Clone, Debug)]
-pub enum DnsRecord {
+#[derive(Clone, Educe)]
+#[educe(Debug)]
+pub enum DnsRecord<K: EnrKeyUnambiguous> {
     Root(RootRecord),
     Link {
-        public_key: VerifyKey,
+        public_key: K::PublicKey,
         domain: String,
     },
     Branch {
         children: HashSet<Base32Hash>,
     },
     Enr {
-        record: Enr,
+        record: Enr<K>,
     },
 }
 
-impl Display for DnsRecord {
+impl<K: EnrKeyUnambiguous> Display for DnsRecord<K> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Root(root_record) => write!(f, "{}", root_record),
@@ -98,7 +93,7 @@ impl Display for DnsRecord {
                 f,
                 "{}{}@{}",
                 LINK_PREFIX,
-                BASE32_NOPAD.encode(&public_key.to_bytes()),
+                BASE32_NOPAD.encode(&public_key.encode_uncompressed()),
                 domain
             ),
             Self::Branch { children } => write!(
@@ -116,7 +111,7 @@ impl Display for DnsRecord {
     }
 }
 
-impl FromStr for DnsRecord {
+impl<K: EnrKeyUnambiguous> FromStr for DnsRecord<K> {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -139,7 +134,7 @@ impl FromStr for DnsRecord {
                 } else if let Some(v) = entry.strip_prefix("sig=") {
                     trace!("Extracting signature: {:?}", v);
                     let v = BASE64URL_NOPAD.decode(v.as_bytes())?;
-                    sig = Some(Signature::from_bytes(&v)?);
+                    sig = Some(v);
                 } else {
                     bail!("Invalid string: {}", entry);
                 }
@@ -161,13 +156,13 @@ impl FromStr for DnsRecord {
 
         if let Some(link) = s.strip_prefix(LINK_PREFIX) {
             let mut it = link.split('@');
-            let public_key = VerifyKey::from_encoded_point(&EncodedPoint::from_bytes(
+            let public_key = K::decode_public(
                 &BASE32_NOPAD.decode(
                     &it.next()
                         .ok_or_else(|| anyhow!("Public key not found"))?
                         .as_bytes(),
                 )?,
-            )?)?;
+            )?;
             let domain = it
                 .next()
                 .ok_or_else(|| anyhow!("Domain not found"))?
@@ -196,7 +191,7 @@ impl FromStr for DnsRecord {
         }
 
         if s.starts_with(ENR_PREFIX) {
-            let record = s.parse::<Enr>().map_err(anyhow::Error::msg)?;
+            let record = s.parse::<Enr<K>>().map_err(anyhow::Error::msg)?;
 
             return Ok(DnsRecord::Enr { record });
         }
@@ -205,31 +200,33 @@ impl FromStr for DnsRecord {
     }
 }
 
-fn domain_is_allowed(
-    whitelist: &Option<Arc<HashMap<String, VerifyKey>>>,
+fn domain_is_allowed<K: EnrKeyUnambiguous>(
+    whitelist: &Option<Arc<HashMap<String, K::PublicKey>>>,
     domain: &str,
-    public_key: &VerifyKey,
+    public_key: &K::PublicKey,
 ) -> bool {
     whitelist.as_ref().map_or(true, |whitelist| {
-        whitelist.get(domain).map_or(false, |pk| *pk == *public_key)
+        whitelist
+            .get(domain)
+            .map_or(false, |pk| pk.encode() == public_key.encode())
     })
 }
 
 #[derive(Clone, Debug)]
-enum BranchKind {
+enum BranchKind<K: EnrPublicKey> {
     Enr,
     Link {
-        remote_whitelist: Option<Arc<HashMap<String, VerifyKey>>>,
+        remote_whitelist: Option<Arc<HashMap<String, K>>>,
     },
 }
 
-fn resolve_branch<B: Backend>(
+fn resolve_branch<B: Backend, K: EnrKeyUnambiguous>(
     task_group: Arc<TaskGroup>,
     backend: Arc<B>,
     host: String,
     children: HashSet<Base32Hash>,
-    kind: BranchKind,
-) -> QueryStream {
+    kind: BranchKind<K::PublicKey>,
+) -> QueryStream<K> {
     let (tx, mut branches_res) = tokio::sync::mpsc::channel(1);
     for subdomain in &children {
         let fqdn = format!("{}.{}", subdomain, host);
@@ -260,7 +257,7 @@ fn resolve_branch<B: Backend>(
                                 }
                                 DnsRecord::Link { public_key, domain } => {
                                     if let BranchKind::Link { remote_whitelist } = &kind {
-                                        if domain_is_allowed(
+                                        if domain_is_allowed::<K>(
                                             &remote_whitelist,
                                             &domain,
                                             &public_key,
@@ -330,21 +327,21 @@ fn resolve_branch<B: Backend>(
     })
 }
 
-fn resolve_tree<B: Backend>(
+fn resolve_tree<B: Backend, K: EnrKeyUnambiguous>(
     task_group: Option<Arc<TaskGroup>>,
     backend: Arc<B>,
     host: String,
-    public_key: Option<VerifyKey>,
+    public_key: Option<K::PublicKey>,
     seen_sequence: Option<usize>,
-    remote_whitelist: Option<Arc<HashMap<String, VerifyKey>>>,
-) -> QueryStream {
+    remote_whitelist: Option<Arc<HashMap<String, K::PublicKey>>>,
+) -> QueryStream<K> {
     Box::pin(try_stream! {
         let task_group = task_group.unwrap_or_default();
-        let record = backend.get_record(host.clone()).await?;
+        let record = backend.get_record::<K>(host.clone()).await?;
         if let Some(record) = &record {
             if let DnsRecord::Root(record) = &record {
                 if let Some(pk) = public_key {
-                    if !record.verify(&pk)? {
+                    if !record.verify::<K>(&pk)? {
                         Err(anyhow!("Public key does not match"))?
                     }
                 }
@@ -377,14 +374,14 @@ fn resolve_tree<B: Backend>(
     })
 }
 
-pub struct Resolver<B> {
+pub struct Resolver<B: Backend, K: EnrKeyUnambiguous> {
     backend: Arc<B>,
     task_group: Option<Arc<TaskGroup>>,
     seen_sequence: Option<usize>,
-    remote_whitelist: Option<Arc<HashMap<String, VerifyKey>>>,
+    remote_whitelist: Option<Arc<HashMap<String, K::PublicKey>>>,
 }
 
-impl<B> Resolver<B> {
+impl<B: Backend, K: EnrKeyUnambiguous> Resolver<B, K> {
     pub fn new(backend: Arc<B>) -> Self {
         Self {
             backend,
@@ -406,15 +403,13 @@ impl<B> Resolver<B> {
 
     pub fn with_remote_whitelist(
         &mut self,
-        remote_whitelist: Arc<HashMap<String, VerifyKey>>,
+        remote_whitelist: Arc<HashMap<String, K::PublicKey>>,
     ) -> &mut Self {
         self.remote_whitelist = Some(remote_whitelist);
         self
     }
-}
 
-impl<B: Backend> Resolver<B> {
-    pub fn query(&self, host: impl Display, public_key: Option<VerifyKey>) -> QueryStream {
+    pub fn query(&self, host: impl Display, public_key: Option<K::PublicKey>) -> QueryStream<K> {
         resolve_tree(
             self.task_group.clone(),
             self.backend.clone(),
@@ -429,6 +424,10 @@ impl<B: Backend> Resolver<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use k256::{
+        ecdsa::{SigningKey, VerifyKey},
+        EncodedPoint,
+    };
     use maplit::hashmap;
     use std::collections::{HashMap, HashSet};
     use tracing_subscriber::EnvFilter;
@@ -476,7 +475,7 @@ mod tests {
             })
             .collect::<HashMap<_, _>>();
 
-        let mut s = Resolver::new(Arc::new(data))
+        let mut s = Resolver::<_, SigningKey>::new(Arc::new(data))
             .with_remote_whitelist(Arc::new(hashmap!{
                 "morenodes.example.org".to_string() => VerifyKey::from_encoded_point(&EncodedPoint::from_bytes(&hex::decode("049f88229042fef9200246f49f94d9b77c4e954721442714e85850cb6d9e5daf2d880ea0e53cb3ac1a75f9923c2726a4f941f7d326781baa6380754a360de5c2b6").unwrap()).unwrap()).unwrap()
             }))

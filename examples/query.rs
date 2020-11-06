@@ -1,3 +1,4 @@
+use k256::ecdsa::SigningKey;
 use std::{sync::Arc, time::Instant};
 use tokio::stream::StreamExt;
 use tokio_compat_02::FutureExt;
@@ -18,7 +19,7 @@ async fn main() {
         .await
         .unwrap();
 
-    let mut st = dnsdisc::Resolver::new(Arc::new(resolver)).query(DNS_ROOT, None);
+    let mut st = dnsdisc::Resolver::<_, SigningKey>::new(Arc::new(resolver)).query(DNS_ROOT, None);
     let mut total = 0;
     let start = Instant::now();
     while let Some(record) = st.try_next().await.unwrap() {
