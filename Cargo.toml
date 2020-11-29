@@ -15,7 +15,7 @@ auto_impl = "0.4"
 data-encoding = "2"
 derive_more = "0.99"
 educe = { version = "0.4", features = ["Debug"] }
-enr = { version = "0.4", default-features = false }
+enr = { git = "https://github.com/rust-ethereum/enr", branch = "vorot93/bytes", default-features = false }
 maplit = "1"
 sha3 = "0.9"
 task-group = { git = "https://github.com/vorot93/task-group" }
@@ -26,14 +26,11 @@ tracing-futures = "0.2"
 trust-dns-resolver = { version = "0.19", optional = true }
 
 [dev-dependencies]
-enr = { version = "0.4", default-features = false, features = ["k256"] }
+enr = { git = "https://github.com/rust-ethereum/enr", branch = "vorot93/bytes", default-features = false, features = ["k256"] }
 hex = "0.4"
 k256 = { version = "0.5", features = ["ecdsa"] }
 tokio = { version = "0.3", features = ["full"] }
 tracing-subscriber = "0.2"
-
-[patch.crates-io]
-enr = { git = "https://github.com/rust-ethereum/enr" }
 
 [features]
 trust-dns = ["trust-dns-resolver"]
