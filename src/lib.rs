@@ -93,7 +93,7 @@ impl<K: EnrKeyUnambiguous> Display for DnsRecord<K> {
                 f,
                 "{}{}@{}",
                 LINK_PREFIX,
-                BASE32_NOPAD.encode(&public_key.encode_uncompressed()),
+                BASE32_NOPAD.encode(public_key.encode_uncompressed().as_ref()),
                 domain
             ),
             Self::Branch { children } => write!(
@@ -208,7 +208,7 @@ fn domain_is_allowed<K: EnrKeyUnambiguous>(
     whitelist.as_ref().map_or(true, |whitelist| {
         whitelist
             .get(domain)
-            .map_or(false, |pk| pk.encode() == public_key.encode())
+            .map_or(false, |pk| pk.encode().as_ref() == public_key.encode().as_ref())
     })
 }
 
