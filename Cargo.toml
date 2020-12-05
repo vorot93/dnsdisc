@@ -12,13 +12,16 @@ arrayvec = "0.5"
 async-stream = "0.3"
 async-trait = "0.1"
 auto_impl = "0.4"
+bytes = "0.6"
 data-encoding = "2"
 derive_more = "0.99"
 educe = { version = "0.4", features = ["Debug"] }
 enr = { git = "https://github.com/rust-ethereum/enr", branch = "vorot93/bytes", default-features = false }
+hex = "*"
 maplit = "1"
 sha3 = "0.9"
 task-group = { git = "https://github.com/vorot93/task-group" }
+thiserror = "1"
 tokio = { version = "0.3", features = ["sync", "stream"] }
 tokio-compat-02 = "0.1"
 tracing = { version = "0.1", default-features = false }

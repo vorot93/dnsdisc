@@ -1,6 +1,7 @@
 use anyhow::{anyhow, bail};
 use arrayvec::ArrayString;
 use async_stream::{stream, try_stream};
+use bytes::Bytes;
 use data_encoding::*;
 use derive_more::{Deref, Display};
 use educe::Educe;
@@ -15,6 +16,7 @@ use std::{
     sync::Arc,
 };
 use task_group::TaskGroup;
+use thiserror::Error;
 use tokio::stream::{Stream, StreamExt};
 use tracing::*;
 
@@ -31,11 +33,21 @@ pub const LINK_PREFIX: &str = "enrtree://";
 pub const BRANCH_PREFIX: &str = "enrtree-branch:";
 pub const ENR_PREFIX: &str = "enr:";
 
-#[derive(Clone, Debug, Deref)]
+#[derive(Debug, Error)]
+#[error("Invalid Enr: {0}")]
+pub struct InvalidEnr(String);
+
+fn debug_bytes(b: &Bytes, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    write!(f, "{}", hex::encode(b))
+}
+
+#[derive(Clone, Deref, Educe)]
+#[educe(Debug)]
 pub struct RootRecord {
     #[deref]
     base: UnsignedRoot,
-    signature: Vec<u8>,
+    #[educe(Debug(method = "debug_bytes"))]
+    signature: Bytes,
 }
 
 #[derive(Clone, Debug, Display)]
@@ -54,7 +66,9 @@ pub struct UnsignedRoot {
 
 impl RootRecord {
     fn verify<K: EnrKeyUnambiguous>(&self, pk: &K::PublicKey) -> anyhow::Result<bool> {
-        Ok(pk.verify_v4(self.to_string().as_bytes(), &self.signature))
+        let mut sig = self.signature.clone();
+        sig.truncate(64);
+        Ok(pk.verify_v4(self.base.to_string().as_bytes(), &sig))
     }
 }
 
@@ -133,7 +147,7 @@ impl<K: EnrKeyUnambiguous> FromStr for DnsRecord<K> {
                     seq = Some(v.parse()?);
                 } else if let Some(v) = entry.strip_prefix("sig=") {
                     trace!("Extracting signature: {:?}", v);
-                    let v = BASE64URL_NOPAD.decode(v.as_bytes())?;
+                    let v = BASE64URL_NOPAD.decode(v.as_bytes())?.into();
                     sig = Some(v);
                 } else {
                     bail!("Invalid string: {}", entry);
@@ -191,7 +205,7 @@ impl<K: EnrKeyUnambiguous> FromStr for DnsRecord<K> {
         }
 
         if s.starts_with(ENR_PREFIX) {
-            let record = s.parse::<Enr<K>>().map_err(anyhow::Error::msg)?;
+            let record = s.parse::<Enr<K>>().map_err(InvalidEnr)?;
 
             return Ok(DnsRecord::Enr { record });
         }
@@ -245,6 +259,7 @@ fn resolve_branch<B: Backend, K: EnrKeyUnambiguous>(
                         let record = backend.get_record(fqdn).await?;
                         if let Some(record) = record {
                             trace!("Resolved record {}: {:?}", subdomain, record);
+                            let record = record.parse()?;
                             match record {
                                 DnsRecord::Branch { children } => {
                                     let mut t =
@@ -337,8 +352,9 @@ fn resolve_tree<B: Backend, K: EnrKeyUnambiguous>(
 ) -> QueryStream<K> {
     Box::pin(try_stream! {
         let task_group = task_group.unwrap_or_default();
-        let record = backend.get_record::<K>(host.clone()).await?;
+        let record = backend.get_record(host.clone()).await?;
         if let Some(record) = &record {
+            let record = DnsRecord::<K>::from_str(&record)?;
             if let DnsRecord::Root(record) = &record {
                 if let Some(pk) = public_key {
                     if !record.verify::<K>(&pk)? {
@@ -419,6 +435,20 @@ impl<B: Backend, K: EnrKeyUnambiguous> Resolver<B, K> {
             self.remote_whitelist.clone(),
         )
     }
+
+    pub fn query_tree(&self, tree_link: impl AsRef<str>) -> QueryStream<K> {
+        match DnsRecord::<K>::from_str(tree_link.as_ref()).and_then(|link| {
+            if let DnsRecord::Link { public_key, domain } = link {
+                println!("{}/{}", domain, hex::encode(public_key.encode()));
+                Ok((public_key, domain))
+            } else {
+                bail!("Unexpected record type")
+            }
+        }) {
+            Ok((public_key, domain)) => self.query(domain, Some(public_key)),
+            Err(e) => Box::pin(tokio::stream::once(Err(e))),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -431,6 +461,32 @@ mod tests {
     use maplit::hashmap;
     use std::collections::{HashMap, HashSet};
     use tracing_subscriber::EnvFilter;
+
+    fn test_records_to_hashmap(
+        domain: &str,
+        records: &[(Option<&str>, &str)],
+    ) -> HashMap<String, String> {
+        records
+            .iter()
+            .map(|(sub, entry)| {
+                (
+                    format!(
+                        "{}{}",
+                        sub.map(|s| format!("{}.", s)).unwrap_or_default(),
+                        domain
+                    ),
+                    entry.to_string(),
+                )
+            })
+            .collect()
+    }
+
+    fn test_records_to_hashmap_geth(records: &[(&str, &str)]) -> HashMap<String, String> {
+        records
+            .iter()
+            .map(|(domain, entry)| (domain.to_string(), entry.to_string()))
+            .collect()
+    }
 
     #[tokio::test]
     async fn eip_example() {
@@ -461,19 +517,7 @@ mod tests {
             )
         ];
 
-        let data = TEST_RECORDS
-            .iter()
-            .map(|(sub, entry)| {
-                (
-                    format!(
-                        "{}{}",
-                        sub.map(|s| format!("{}.", s)).unwrap_or_default(),
-                        DOMAIN.to_string()
-                    ),
-                    entry.to_string(),
-                )
-            })
-            .collect::<HashMap<_, _>>();
+        let data = test_records_to_hashmap(DOMAIN, TEST_RECORDS);
 
         let mut s = Resolver::<_, SigningKey>::new(Arc::new(data))
             .with_remote_whitelist(Arc::new(hashmap!{
@@ -492,5 +536,25 @@ mod tests {
                 "enr:-HW4QLAYqmrwllBEnzWWs7I5Ev2IAs7x_dZlbYdRdMUx5EyKHDXp7AV5CkuPGUPdvbv1_Ms1CPfhcGCvSElSosZmyoqAgmlkgnY0iXNlY3AyNTZrMaECriawHKWdDRk2xeZkrOXBQ0dfMFLHY4eENZwdufn1S1o",
             ].into_iter().map(ToString::to_string).collect()
         );
+    }
+
+    #[tokio::test]
+    async fn bad_node() {
+        const TEST_RECORDS: &[(&str, &str)] = &[
+            ("n",                            "enrtree-root:v1 e=INDMVBZEEQ4ESVYAKGIYU74EAA l=C7HRFPF3BLGF3YR4DY5KX3SMBE seq=3 sig=Vl3AmunLur0JZ3sIyJPSH6A3Vvdp4F40jWQeCmkIhmcgwE4VC5U9wpK8C_uL_CMY29fd6FAhspRvq2z_VysTLAA"),
+		    ("C7HRFPF3BLGF3YR4DY5KX3SMBE.n", "enrtree://AM5FCQLWIZX2QFPNJAP7VUERCCRNGRHWZG3YYHIUV7BVDQ5FDPRT2@morenodes.example.org"),
+		    ("INDMVBZEEQ4ESVYAKGIYU74EAA.n", "enr:-----"),
+        ];
+
+        let data = test_records_to_hashmap_geth(TEST_RECORDS);
+
+        let err = Resolver::<_, SigningKey>::new(Arc::new(data))
+            .query_tree("enrtree://AKPYQIUQIL7PSIACI32J7FGZW56E5FKHEFCCOFHILBIMW3M6LWXS2@n")
+            .collect::<Result<Vec<_>, _>>()
+            .await
+            .unwrap_err();
+        if !err.chain().any(std::error::Error::is::<InvalidEnr>) {
+            unreachable!("should have seen the correct error")
+        }
     }
 }

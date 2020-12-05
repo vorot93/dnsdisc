@@ -1,7 +1,5 @@
 use super::Backend;
-use crate::DnsRecord;
 use async_trait::async_trait;
-use enr::EnrKeyUnambiguous;
 use tokio_compat_02::FutureExt;
 use tracing::*;
 use trust_dns_resolver::{
@@ -14,28 +12,23 @@ where
     C: DnsHandle,
     P: ConnectionProvider<Conn = C>,
 {
-    async fn get_record<K: EnrKeyUnambiguous>(
-        &self,
-        fqdn: String,
-    ) -> anyhow::Result<Option<DnsRecord<K>>> {
+    async fn get_record(&self, fqdn: String) -> anyhow::Result<Option<String>> {
         trace!("Resolving FQDN {}", fqdn);
-        Ok(match self.txt_lookup(format!("{}.", fqdn)).compat().await {
+        match self.txt_lookup(format!("{}.", fqdn)).compat().await {
             Err(e) => {
-                if let ResolveErrorKind::NoRecordsFound { .. } = e.kind() {
-                    None
-                } else {
+                if !matches!(e.kind(), ResolveErrorKind::NoRecordsFound { .. }) {
                     return Err(e.into());
                 }
             }
             Ok(v) => {
                 if let Some(txt) = v.into_iter().next() {
                     if let Some(txt_entry) = txt.iter().next() {
-                        return Ok(Some(std::str::from_utf8(&*txt_entry)?.parse()?));
+                        return Ok(Some(String::from_utf8(txt_entry.to_vec())?));
                     }
                 }
-
-                None
             }
-        })
+        }
+
+        Ok(None)
     }
 }
