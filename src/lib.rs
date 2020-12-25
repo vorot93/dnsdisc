@@ -17,7 +17,7 @@ use std::{
 };
 use task_group::TaskGroup;
 use thiserror::Error;
-use tokio::stream::{Stream, StreamExt};
+use tokio_stream::{Stream, StreamExt};
 use tracing::*;
 
 mod backend;
@@ -67,6 +67,8 @@ pub struct UnsignedRoot {
 impl RootRecord {
     fn verify<K: EnrKeyUnambiguous>(&self, pk: &K::PublicKey) -> anyhow::Result<bool> {
         let mut sig = self.signature.clone();
+
+        // TODO: find way to unify with ed25519 sigs
         sig.truncate(64);
         Ok(pk.verify_v4(self.base.to_string().as_bytes(), &sig))
     }
@@ -335,7 +337,7 @@ fn resolve_branch<B: Backend, K: EnrKeyUnambiguous>(
 
     Box::pin(stream! {
         trace!("Resolving branch {:?}", children);
-        while let Some(v) = branches_res.next().await {
+        while let Some(v) = branches_res.recv().await {
             yield v;
         }
         trace!("Branch {:?} resolution complete", children);
@@ -446,7 +448,7 @@ impl<B: Backend, K: EnrKeyUnambiguous> Resolver<B, K> {
             }
         }) {
             Ok((public_key, domain)) => self.query(domain, Some(public_key)),
-            Err(e) => Box::pin(tokio::stream::once(Err(e))),
+            Err(e) => Box::pin(tokio_stream::once(Err(e))),
         }
     }
 }

@@ -1,7 +1,6 @@
 use k256::ecdsa::SigningKey;
 use std::{sync::Arc, time::Instant};
-use tokio::stream::StreamExt;
-use tokio_compat_02::FutureExt;
+use tokio_stream::StreamExt;
 use tracing::*;
 use tracing_subscriber::EnvFilter;
 use trust_dns_resolver::{config::*, TokioAsyncResolver};
@@ -15,10 +14,8 @@ async fn main() {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
-    let resolver = TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default())
-        .compat()
-        .await
-        .unwrap();
+    let resolver =
+        TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default()).unwrap();
 
     let mut st = dnsdisc::Resolver::<_, SigningKey>::new(Arc::new(resolver)).query_tree(DNS_ROOT);
     let mut total = 0;

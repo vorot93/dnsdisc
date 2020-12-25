@@ -1,20 +1,21 @@
 use super::Backend;
 use async_trait::async_trait;
-use tokio_compat_02::FutureExt;
 use tracing::*;
 use trust_dns_resolver::{
-    error::ResolveErrorKind, proto::DnsHandle, AsyncResolver, ConnectionProvider,
+    error::{ResolveError, ResolveErrorKind},
+    proto::DnsHandle,
+    AsyncResolver, ConnectionProvider,
 };
 
 #[async_trait]
 impl<C, P> Backend for AsyncResolver<C, P>
 where
-    C: DnsHandle,
+    C: DnsHandle<Error = ResolveError>,
     P: ConnectionProvider<Conn = C>,
 {
     async fn get_record(&self, fqdn: String) -> anyhow::Result<Option<String>> {
         trace!("Resolving FQDN {}", fqdn);
-        match self.txt_lookup(format!("{}.", fqdn)).compat().await {
+        match self.txt_lookup(format!("{}.", fqdn)).await {
             Err(e) => {
                 if !matches!(e.kind(), ResolveErrorKind::NoRecordsFound { .. }) {
                     return Err(e.into());
