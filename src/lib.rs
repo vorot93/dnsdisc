@@ -457,7 +457,7 @@ impl<B: Backend, K: EnrKeyUnambiguous> Resolver<B, K> {
 mod tests {
     use super::*;
     use k256::{
-        ecdsa::{SigningKey, VerifyKey},
+        ecdsa::{SigningKey, VerifyingKey},
         EncodedPoint,
     };
     use maplit::hashmap;
@@ -523,7 +523,7 @@ mod tests {
 
         let mut s = Resolver::<_, SigningKey>::new(Arc::new(data))
             .with_remote_whitelist(Arc::new(hashmap!{
-                "morenodes.example.org".to_string() => VerifyKey::from_encoded_point(&EncodedPoint::from_bytes(&hex::decode("049f88229042fef9200246f49f94d9b77c4e954721442714e85850cb6d9e5daf2d880ea0e53cb3ac1a75f9923c2726a4f941f7d326781baa6380754a360de5c2b6").unwrap()).unwrap()).unwrap()
+                "morenodes.example.org".to_string() => VerifyingKey::from_encoded_point(&EncodedPoint::from_bytes(&hex::decode("049f88229042fef9200246f49f94d9b77c4e954721442714e85850cb6d9e5daf2d880ea0e53cb3ac1a75f9923c2726a4f941f7d326781baa6380754a360de5c2b6").unwrap()).unwrap()).unwrap()
             }))
             .query(DOMAIN.to_string(), None);
         let mut out = HashSet::new();
