@@ -1,13 +1,14 @@
 use super::Backend;
 use async_trait::async_trait;
 use std::collections::HashMap;
+use tracing::*;
 
 #[async_trait]
 impl Backend for HashMap<String, String> {
     async fn get_record(&self, fqdn: String) -> anyhow::Result<Option<String>> {
-        println!("resolving {}", fqdn);
+        debug!("resolving {}", fqdn);
         if let Some(v) = self.get(&fqdn) {
-            println!("resolved {} to {}", fqdn, v);
+            debug!("resolved {} to {}", fqdn, v);
             return Ok(Some(v.clone()));
         }
 

@@ -65,12 +65,16 @@ pub struct UnsignedRoot {
 }
 
 impl RootRecord {
-    fn verify<K: EnrKeyUnambiguous>(&self, pk: &K::PublicKey) -> anyhow::Result<bool> {
+    fn verify<K: EnrKeyUnambiguous>(&self, pk: &K::PublicKey) -> anyhow::Result<()> {
         let mut sig = self.signature.clone();
 
         // TODO: find way to unify with ed25519 sigs
         sig.truncate(64);
-        Ok(pk.verify_v4(self.base.to_string().as_bytes(), &sig))
+        if !pk.verify_v4(self.base.to_string().as_bytes(), &sig) {
+            bail!("Public key does not match");
+        }
+
+        Ok(())
     }
 }
 
@@ -359,9 +363,7 @@ fn resolve_tree<B: Backend, K: EnrKeyUnambiguous>(
             let record = DnsRecord::<K>::from_str(&record)?;
             if let DnsRecord::Root(record) = &record {
                 if let Some(pk) = public_key {
-                    if !record.verify::<K>(&pk)? {
-                        Err(anyhow!("Public key does not match"))?
-                    }
+                    record.verify::<K>(&pk)?;
                 }
 
                 let UnsignedRoot { enr_root, link_root, sequence } = &record.base;
@@ -441,7 +443,7 @@ impl<B: Backend, K: EnrKeyUnambiguous> Resolver<B, K> {
     pub fn query_tree(&self, tree_link: impl AsRef<str>) -> QueryStream<K> {
         match DnsRecord::<K>::from_str(tree_link.as_ref()).and_then(|link| {
             if let DnsRecord::Link { public_key, domain } = link {
-                println!("{}/{}", domain, hex::encode(public_key.encode()));
+                info!("{}/{}", domain, hex::encode(public_key.encode()));
                 Ok((public_key, domain))
             } else {
                 bail!("Unexpected record type")
